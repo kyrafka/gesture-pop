@@ -56,6 +56,24 @@ class GestureStudioQtTests(unittest.TestCase):
         finally:
             window.close()
 
+    def test_sidebar_collapses_to_icon_rail_and_expands(self) -> None:
+        window = GestureStudioQt(start_camera=False)
+        window.show()
+        try:
+            window.set_sidebar_collapsed(True)
+            QTest.qWait(260)
+            self.assertEqual(window.sidebar.width(), window.sidebar_collapsed_width)
+            self.assertFalse(window.gesture_section.isVisible())
+            self.assertTrue(all(not button.text() for button in window.nav_buttons))
+
+            window.set_sidebar_collapsed(False)
+            QTest.qWait(260)
+            self.assertEqual(window.sidebar.width(), window.sidebar_expanded_width)
+            self.assertTrue(window.gesture_section.isVisible())
+            self.assertEqual(window.nav_buttons[0].text(), "Captura")
+        finally:
+            window.close()
+
 
 if __name__ == "__main__":
     unittest.main()

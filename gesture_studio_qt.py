@@ -11,7 +11,15 @@ from pathlib import Path
 
 import cv2
 import numpy as np
-from PySide6.QtCore import QObject, QSize, Qt, QThread, Signal
+from PySide6.QtCore import (
+    QEasingCurve,
+    QObject,
+    QPropertyAnimation,
+    QSize,
+    Qt,
+    QThread,
+    Signal,
+)
 from PySide6.QtGui import QAction, QCloseEvent, QIcon, QImage, QKeySequence, QPixmap, QShortcut
 from PySide6.QtWidgets import (
     QApplication,
@@ -206,6 +214,10 @@ class GestureStudioQt(QMainWindow):
         self.nav_buttons: list[QPushButton] = []
         self.fade_controller = FadeController(self)
         self.toast: Toast | None = None
+        self.sidebar_expanded_width = 244
+        self.sidebar_collapsed_width = 64
+        self.sidebar_collapsed = False
+        self.sidebar_animation: QPropertyAnimation | None = None
 
         self.setWindowTitle("Gesture Pop Studio")
         self.setMinimumSize(1180, 760)
@@ -246,27 +258,35 @@ class GestureStudioQt(QMainWindow):
         self.statusBar().showMessage("Listo")
 
     def _build_sidebar(self) -> QWidget:
-        sidebar = QWidget()
-        sidebar.setObjectName("sidebar")
-        sidebar.setFixedWidth(244)
-        layout = QVBoxLayout(sidebar)
-        layout.setContentsMargins(16, 18, 16, 16)
-        layout.setSpacing(8)
+        self.sidebar = QWidget()
+        self.sidebar.setObjectName("sidebar")
+        self.sidebar.setMinimumWidth(self.sidebar_expanded_width)
+        self.sidebar.setMaximumWidth(self.sidebar_expanded_width)
+        self.sidebar_layout = QVBoxLayout(self.sidebar)
+        self.sidebar_layout.setContentsMargins(16, 18, 16, 16)
+        self.sidebar_layout.setSpacing(8)
 
         brand_row = QHBoxLayout()
-        mark = QLabel()
-        mark.setObjectName("brandMark")
-        mark.setPixmap(app_icon("fa6s.hand", COLORS["blue"]).pixmap(23, 23))
-        brand = QLabel("Gesture Pop")
-        brand.setObjectName("brand")
-        brand_row.addWidget(mark)
-        brand_row.addWidget(brand)
+        self.brand_mark = QLabel()
+        self.brand_mark.setObjectName("brandMark")
+        self.brand_mark.setPixmap(app_icon("fa6s.hand", COLORS["blue"]).pixmap(23, 23))
+        self.brand_label = QLabel("Gesture Pop")
+        self.brand_label.setObjectName("brand")
+        self.sidebar_toggle = QPushButton()
+        self.sidebar_toggle.setObjectName("sidebarToggle")
+        apply_button_icon(self.sidebar_toggle, "fa6s.chevron-left")
+        self.sidebar_toggle.setToolTip("Ocultar panel lateral (Ctrl+B)")
+        self.sidebar_toggle.setFixedSize(32, 32)
+        self.sidebar_toggle.clicked.connect(self.toggle_sidebar)
+        brand_row.addWidget(self.brand_mark)
+        brand_row.addWidget(self.brand_label)
         brand_row.addStretch()
-        layout.addLayout(brand_row)
-        subtitle = QLabel("ESTUDIO LOCAL")
-        subtitle.setObjectName("eyebrow")
-        layout.addWidget(subtitle)
-        layout.addSpacing(10)
+        brand_row.addWidget(self.sidebar_toggle)
+        self.sidebar_layout.addLayout(brand_row)
+        self.brand_subtitle = QLabel("ESTUDIO LOCAL")
+        self.brand_subtitle.setObjectName("eyebrow")
+        self.sidebar_layout.addWidget(self.brand_subtitle)
+        self.sidebar_layout.addSpacing(10)
 
         nav_group = QButtonGroup(self)
         nav_group.setExclusive(True)
@@ -280,15 +300,28 @@ class GestureStudioQt(QMainWindow):
             button = QPushButton(text)
             button.setObjectName("navButton")
             button.setCheckable(True)
+            button.setProperty("expandedText", text)
             apply_button_icon(button, icon_name)
             button.setIconSize(QSize(18, 18))
             button.clicked.connect(lambda checked=False, page=index: self._switch_page(page))
             nav_group.addButton(button)
             self.nav_buttons.append(button)
-            layout.addWidget(button)
+            self.sidebar_layout.addWidget(button)
         self.nav_buttons[0].setChecked(True)
 
-        layout.addSpacing(14)
+        self.sidebar_collapsed_spacer = QWidget()
+        self.sidebar_collapsed_spacer.setSizePolicy(
+            QSizePolicy.Policy.Preferred,
+            QSizePolicy.Policy.Expanding,
+        )
+        self.sidebar_collapsed_spacer.hide()
+        self.sidebar_layout.addWidget(self.sidebar_collapsed_spacer, 1)
+
+        self.sidebar_layout.addSpacing(14)
+        self.gesture_section = QWidget()
+        gesture_layout = QVBoxLayout(self.gesture_section)
+        gesture_layout.setContentsMargins(0, 0, 0, 0)
+        gesture_layout.setSpacing(8)
         label_row = QHBoxLayout()
         label_title = QLabel("GESTOS")
         label_title.setObjectName("eyebrow")
@@ -297,12 +330,12 @@ class GestureStudioQt(QMainWindow):
         label_row.addWidget(label_title)
         label_row.addStretch()
         label_row.addWidget(self.gesture_total_label)
-        layout.addLayout(label_row)
+        gesture_layout.addLayout(label_row)
 
         self.gesture_list = QListWidget()
         self.gesture_list.setIconSize(QSize(46, 46))
         self.gesture_list.currentItemChanged.connect(self._on_gesture_selected)
-        layout.addWidget(self.gesture_list, 1)
+        gesture_layout.addWidget(self.gesture_list, 1)
 
         image_actions = QHBoxLayout()
         add = QPushButton("Agregar")
@@ -316,8 +349,9 @@ class GestureStudioQt(QMainWindow):
         replace.clicked.connect(self.replace_image)
         image_actions.addWidget(add, 1)
         image_actions.addWidget(replace)
-        layout.addLayout(image_actions)
-        return sidebar
+        gesture_layout.addLayout(image_actions)
+        self.sidebar_layout.addWidget(self.gesture_section, 1)
+        return self.sidebar
 
     def _build_topbar(self) -> QHBoxLayout:
         layout = QHBoxLayout()
@@ -579,6 +613,88 @@ class GestureStudioQt(QMainWindow):
         exit_action.setIcon(app_icon("fa6s.xmark"))
         exit_action.triggered.connect(self.close)
         file_menu.addAction(exit_action)
+
+        view_menu = self.menuBar().addMenu("Ver")
+        self.sidebar_view_action = QAction("Panel lateral", self)
+        self.sidebar_view_action.setCheckable(True)
+        self.sidebar_view_action.setChecked(True)
+        self.sidebar_view_action.setShortcut(QKeySequence("Ctrl+B"))
+        self.sidebar_view_action.setIcon(app_icon("fa6s.table-columns"))
+        self.sidebar_view_action.triggered.connect(
+            lambda checked: self.set_sidebar_collapsed(not checked)
+        )
+        view_menu.addAction(self.sidebar_view_action)
+
+    def toggle_sidebar(self, checked: bool = False) -> None:
+        del checked
+        self.set_sidebar_collapsed(not self.sidebar_collapsed)
+
+    def set_sidebar_collapsed(self, collapsed: bool, animated: bool = True) -> None:
+        if collapsed == self.sidebar_collapsed and self.sidebar_animation is None:
+            return
+        if self.sidebar_animation is not None:
+            self.sidebar_animation.stop()
+            self.sidebar_animation = None
+
+        self.sidebar_collapsed = collapsed
+        self.sidebar_view_action.setChecked(not collapsed)
+        self.sidebar_toggle.setToolTip(
+            "Mostrar panel lateral (Ctrl+B)" if collapsed else "Ocultar panel lateral (Ctrl+B)"
+        )
+        apply_button_icon(
+            self.sidebar_toggle,
+            "fa6s.chevron-right" if collapsed else "fa6s.chevron-left",
+        )
+
+        if collapsed:
+            self._set_sidebar_content_visible(False)
+            self.sidebar_layout.setContentsMargins(8, 18, 8, 16)
+        else:
+            self.sidebar_layout.setContentsMargins(16, 18, 16, 16)
+
+        target_width = self.sidebar_collapsed_width if collapsed else self.sidebar_expanded_width
+        if not animated:
+            self.sidebar.setMinimumWidth(target_width)
+            self.sidebar.setMaximumWidth(target_width)
+            self._finish_sidebar_resize(collapsed)
+            return
+
+        if collapsed:
+            self.sidebar.setMinimumWidth(self.sidebar_collapsed_width)
+            property_name = b"maximumWidth"
+        else:
+            self.sidebar.setMaximumWidth(self.sidebar_expanded_width)
+            property_name = b"minimumWidth"
+
+        animation = QPropertyAnimation(self.sidebar, property_name, self)
+        animation.setDuration(190)
+        animation.setStartValue(self.sidebar.width())
+        animation.setEndValue(target_width)
+        animation.setEasingCurve(QEasingCurve.Type.OutCubic)
+        animation.finished.connect(lambda state=collapsed: self._finish_sidebar_resize(state))
+        self.sidebar_animation = animation
+        animation.start()
+
+    def _set_sidebar_content_visible(self, visible: bool) -> None:
+        self.brand_mark.setVisible(visible)
+        self.brand_label.setVisible(visible)
+        self.brand_subtitle.setVisible(visible)
+        self.gesture_section.setVisible(visible)
+        self.sidebar_collapsed_spacer.setVisible(not visible)
+        for button in self.nav_buttons:
+            expanded_text = str(button.property("expandedText"))
+            button.setText(expanded_text if visible else "")
+            button.setToolTip("" if visible else expanded_text)
+
+    def _finish_sidebar_resize(self, collapsed: bool) -> None:
+        if collapsed != self.sidebar_collapsed:
+            return
+        target_width = self.sidebar_collapsed_width if collapsed else self.sidebar_expanded_width
+        self.sidebar.setMinimumWidth(target_width)
+        self.sidebar.setMaximumWidth(target_width)
+        if not collapsed:
+            self._set_sidebar_content_visible(True)
+        self.sidebar_animation = None
 
     def _switch_page(self, index: int) -> None:
         titles = [
@@ -1204,6 +1320,7 @@ def main() -> None:
     parser.add_argument("--screenshot", type=Path, help="Guarda una captura de la interfaz durante el smoke test")
     parser.add_argument("--page", type=int, choices=range(4), default=0, help="Pagina inicial para pruebas visuales")
     parser.add_argument("--label", help="Gesto seleccionado durante las pruebas visuales")
+    parser.add_argument("--sidebar-collapsed", action="store_true", help="Inicia con el panel lateral cerrado")
     args = parser.parse_args()
     if args.smoke_test:
         os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -1215,6 +1332,8 @@ def main() -> None:
     if args.label in window.gesture_map:
         window.selected_label = args.label
         window.refresh_all()
+    if args.sidebar_collapsed:
+        window.set_sidebar_collapsed(True, animated=False)
     window.nav_buttons[args.page].setChecked(True)
     window._switch_page(args.page)
     window.show()

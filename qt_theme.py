@@ -116,6 +116,16 @@ def application_stylesheet() -> str:
         background: {COLORS['blue_dark']};
         border-color: #314a76;
     }}
+    QPushButton#sidebarToggle {{
+        min-width: 30px;
+        max-width: 30px;
+        min-height: 30px;
+        max-height: 30px;
+        padding: 0;
+        background: transparent;
+        border-color: transparent;
+    }}
+    QPushButton#sidebarToggle:hover {{ background: {COLORS['surface_2']}; }}
     QListWidget {{
         background: transparent;
         border: 0;

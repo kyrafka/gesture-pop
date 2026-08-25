@@ -13,6 +13,8 @@ Haz doble clic en `iniciar_estudio.bat` para abrir Gesture Pop Studio. La interf
 - `Entrenamiento`: cobertura por clase y creacion del modelo.
 - `Reconocimiento`: acciones configuradas y lanzamiento del detector en vivo.
 
+La flecha de la esquina superior del panel lateral lo reduce a un riel de iconos y lo vuelve a desplegar hacia la derecha. Tambien puedes alternarlo con `Ctrl+B` o desde `Ver > Panel lateral`.
+
 Desde una sola ventana puedes:
 
 - Agregar imagenes PNG, JPG, JPEG, WEBP, BMP o TIFF.
