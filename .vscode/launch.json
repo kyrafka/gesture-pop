@@ -2,7 +2,15 @@
   "version": "0.2.0",
   "configurations": [
     {
-      "name": "Gesture Studio (interfaz)",
+      "name": "Gesture Pop Studio (Qt)",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/gesture_studio_qt.py",
+      "console": "integratedTerminal",
+      "justMyCode": true
+    },
+    {
+      "name": "Gesture Studio clasico (Tkinter)",
       "type": "debugpy",
       "request": "launch",
       "program": "${workspaceFolder}/gesture_studio.py",

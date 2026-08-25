@@ -4,9 +4,16 @@ Proyecto Python para entrenar gestos con la webcam usando landmarks de manos/car
 
 Los datos personales de entrenamiento no se publican: `.gitignore` excluye capturas de camara, vectores CSV, referencias locales, entornos virtuales y modelos generados.
 
-## Interfaz visual
+## Interfaz visual Qt
 
-Haz doble clic en `iniciar_estudio.bat` para abrir Gesture Studio. Desde una sola ventana puedes:
+Haz doble clic en `iniciar_estudio.bat` para abrir Gesture Pop Studio. La interfaz usa PySide6/Qt y organiza el flujo en cuatro vistas:
+
+- `Captura`: camara, landmarks, estabilidad, telemetria y captura guiada.
+- `Muestras`: galeria de fotos, referencias y vectores antiguos sin foto.
+- `Entrenamiento`: cobertura por clase y creacion del modelo.
+- `Reconocimiento`: acciones configuradas y lanzamiento del detector en vivo.
+
+Desde una sola ventana puedes:
 
 - Agregar imagenes PNG, JPG, JPEG, WEBP, BMP o TIFF.
 - Asignar un nombre de gesto a cada imagen.
@@ -20,7 +27,9 @@ Haz doble clic en `iniciar_estudio.bat` para abrir Gesture Studio. Desde una sol
 - Entrenar el modelo y abrir el reconocimiento.
 - Abrir la imagen asociada en el visor predeterminado cuando el gesto se confirma.
 
-La columna izquierda contiene el menu de imagenes. El centro muestra la camara y los vectores. La columna derecha confirma el gesto activo, su imagen, contador y ultima captura.
+La columna izquierda contiene la navegacion y el menu de gestos. En `Captura`, el centro muestra la camara y los vectores; la columna derecha confirma el gesto activo, su progreso y la posicion/angulos detectados.
+
+La interfaz Tkinter anterior permanece en `gesture_studio.py` como respaldo temporal. El lanzador principal y VS Code abren `gesture_studio_qt.py`.
 
 ### Captura guiada
 
@@ -65,7 +74,7 @@ data/gesture_samples.csv  vectores usados para entrenar
 1. Abre esta carpeta completa en VS Code.
 2. Pulsa `Ctrl+Shift+P`, busca `Python: Select Interpreter` y elige `.venv`.
 3. Abre la vista `Run and Debug`.
-4. Elige `Gesture Studio (interfaz)` y pulsa el boton de play.
+4. Elige `Gesture Pop Studio (Qt)` y pulsa el boton de play.
 
 Tambien puedes hacer doble clic en:
 
