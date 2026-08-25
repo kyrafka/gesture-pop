@@ -1,0 +1,15 @@
+{
+  "camera_index": 0,
+  "target_samples_per_gesture": 20,
+  "save_capture_frames": true,
+  "capture_min_interval_seconds": 0.35,
+  "capture_stability_frames": 6,
+  "capture_stability_threshold": 0.12,
+  "confidence_threshold": 0.68,
+  "confidence_margin": 0.16,
+  "prediction_window": 10,
+  "stability_frames": 7,
+  "release_frames": 5,
+  "cooldown_seconds": 1.2,
+  "overlay_seconds": 1.8
+}

@@ -1,0 +1,22 @@
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+
+.agents/
+.codex/
+flutter-sdk/
+
+# Datos locales de entrenamiento y capturas de camara.
+data/*.csv
+data/captures/
+data/references/
+
+# Modelos descargados o entrenados se regeneran localmente.
+models/*.task
+models/*.joblib
+
+*.log
+.DS_Store
+Thumbs.db

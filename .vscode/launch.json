@@ -1,0 +1,29 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Gesture Studio (interfaz)",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/gesture_studio.py",
+      "console": "integratedTerminal",
+      "justMyCode": true
+    },
+    {
+      "name": "Entrenar gestos",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/train_gestures.py",
+      "console": "integratedTerminal",
+      "justMyCode": true
+    },
+    {
+      "name": "Lanzar imagenes",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/gesture_launcher.py",
+      "console": "integratedTerminal",
+      "justMyCode": true
+    }
+  ]
+}
