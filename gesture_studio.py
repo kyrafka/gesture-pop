@@ -8,7 +8,7 @@ import sys
 import time
 import tkinter as tk
 from pathlib import Path
-from tkinter import filedialog, messagebox, simpledialog
+from tkinter import filedialog, messagebox, simpledialog, ttk
 
 import cv2
 import joblib
@@ -24,6 +24,7 @@ from app_config import (
 )
 from gesture_features import FeatureResult, LandmarkFeatureExtractor, draw_landmarks
 from gesture_runtime import FeatureStabilityTracker
+from guided_capture import CaptureTarget, build_capture_targets
 from reference_images import (
     ReferenceAnalysis,
     analyze_reference,
@@ -35,10 +36,13 @@ from train_gestures import (
     CAPTURE_DIR,
     MANIFEST_FILE,
     MODEL_FILE,
+    TrainingSampleRecord,
     append_manifest,
     append_sample,
     create_sample_id,
+    load_sample_records,
     load_sample_counts,
+    remove_sample_record,
     remove_last_sample_with_id,
     save_capture_frame,
     train_model,
@@ -91,6 +95,11 @@ class GestureStudio:
         self.latest_capture_frame: np.ndarray | None = None
         self.ready = False
         self.last_capture_time = float("-inf")
+        self.guided_active = False
+        self.guided_label: str | None = None
+        self.guided_targets: list[CaptureTarget] = []
+        self.guided_index = 0
+        self.guided_next_capture = float("inf")
         self.closing = False
         self.camera_photo: tk.PhotoImage | None = None
         self.selected_photo: tk.PhotoImage | None = None
@@ -105,6 +114,7 @@ class GestureStudio:
         self.notice_var = tk.StringVar(value="Agrega una imagen o selecciona un gesto para comenzar.")
         self.selected_var = tk.StringVar(value="Sin gesto seleccionado")
         self.count_var = tk.StringVar(value="0 muestras")
+        self.guided_var = tk.StringVar(value="Captura manual")
         self.model_var = tk.StringVar(value=self._model_status())
 
         self._configure_window()
@@ -128,6 +138,8 @@ class GestureStudio:
         file_menu.add_command(label="Agregar imagen...", command=self.add_image)
         file_menu.add_command(label="Agregar referencia al gesto...", command=self.add_reference)
         file_menu.add_command(label="Reemplazar imagen seleccionada...", command=self.replace_image)
+        file_menu.add_command(label="Iniciar captura guiada...", command=self.toggle_guided_capture)
+        file_menu.add_command(label="Administrar muestras...", command=self.open_sample_manager)
         file_menu.add_separator()
         file_menu.add_command(label="Salir", command=self.close)
         menu.add_cascade(label="Archivo", menu=file_menu)
@@ -369,6 +381,15 @@ class GestureStudio:
         ).pack(anchor="w", padx=18, pady=(12, 0))
         self.progress_canvas = tk.Canvas(panel, width=246, height=12, bg=PANEL, highlightthickness=0)
         self.progress_canvas.pack(padx=18, pady=(5, 2))
+        tk.Label(
+            panel,
+            textvariable=self.guided_var,
+            bg=PANEL,
+            fg=CYAN,
+            font=("Segoe UI Semibold", 9),
+            wraplength=246,
+            justify="center",
+        ).pack(fill="x", padx=18, pady=(5, 0))
 
         self.capture_button = self._button(
             panel,
@@ -380,10 +401,20 @@ class GestureStudio:
         )
         self.capture_button.pack(fill="x", padx=18, pady=(14, 8))
         self._set_capture_ready(False)
+        self.guided_button = self._button(
+            panel,
+            "Iniciar captura guiada",
+            self.toggle_guided_capture,
+            bg=CYAN,
+            fg="#071014",
+        )
+        self.guided_button.pack(fill="x", padx=18, pady=4)
         self.undo_button = self._button(panel, "Deshacer ultima", self.undo_sample)
         self.undo_button.pack(fill="x", padx=18, pady=4)
-        self.gallery_button = self._button(panel, "Ver todas las capturas", self.open_capture_gallery)
+        self.gallery_button = self._button(panel, "Galeria de fotos", self.open_capture_gallery)
         self.gallery_button.pack(fill="x", padx=18, pady=4)
+        self.samples_button = self._button(panel, "Administrar muestras", self.open_sample_manager)
+        self.samples_button.pack(fill="x", padx=18, pady=4)
         self.train_button = self._button(panel, "Entrenar modelo", self.train_current_model, bg=AMBER, fg="#171006")
         self.train_button.pack(fill="x", padx=18, pady=4)
 
@@ -589,12 +620,21 @@ class GestureStudio:
         result = self.extractor.extract(frame)
         hand_ready = result is not None and bool(result.hands)
         stable, movement = self.stability.update(result.vector if hand_ready and result else None)
-        self.ready = bool(self.selected_label and hand_ready and stable)
+        guided_match = self._guided_target_matches(result)
+        guided_waiting = self.guided_active and time.monotonic() < self.guided_next_capture
+        self.ready = bool(
+            self.selected_label
+            and hand_ready
+            and stable
+            and (not self.guided_active or guided_match)
+            and not guided_waiting
+        )
         self.latest_result = result
 
         display = frame.copy()
         draw_landmarks(display, result)
         self.latest_capture_frame = display.copy()
+        self._draw_guided_overlay(display, guided_match)
         canvas_width = max(self.camera_canvas.winfo_width(), 320)
         canvas_height = max(self.camera_canvas.winfo_height(), 240)
         self.camera_photo = bgr_to_photo(
@@ -611,8 +651,9 @@ class GestureStudio:
             anchor="center",
             tags="video",
         )
-        self._update_detection_status(result, stable, movement)
+        self._update_detection_status(result, stable, movement, guided_match)
         self._draw_hand_telemetry(result)
+        self._update_guided_capture(stable, guided_match)
         self.root.after(20, self._update_camera)
 
     def _update_detection_status(
@@ -620,6 +661,7 @@ class GestureStudio:
         result: FeatureResult | None,
         stable: bool,
         movement: float,
+        guided_match: bool,
     ) -> None:
         if self.selected_label is None:
             self.status_var.set("Selecciona o agrega una imagen")
@@ -627,6 +669,15 @@ class GestureStudio:
             self._set_capture_ready(False)
         elif result is None or not result.hands:
             self.status_var.set("Coloca al menos una mano en cuadro")
+            self._set_status_color(AMBER)
+            self._set_capture_ready(False)
+        elif self.guided_active and time.monotonic() < self.guided_next_capture:
+            self.status_var.set("Muestra guardada - prepara la siguiente variacion")
+            self._set_status_color(CYAN)
+            self._set_capture_ready(False)
+        elif self.guided_active and not guided_match:
+            target = self._current_guided_target()
+            self.status_var.set(target.instruction if target else "Prepara el gesto")
             self._set_status_color(AMBER)
             self._set_capture_ready(False)
         elif not stable:
@@ -653,6 +704,103 @@ class GestureStudio:
                 f"{count} de {target} muestras para entrenar\n"
                 f"{photo_count} con foto | {vector_only} solo vector | {reference_count} referencias"
             )
+
+    def _current_guided_target(self) -> CaptureTarget | None:
+        if not self.guided_active or self.guided_index >= len(self.guided_targets):
+            return None
+        return self.guided_targets[self.guided_index]
+
+    def _guided_target_matches(self, result: FeatureResult | None) -> bool:
+        target = self._current_guided_target()
+        pose = result.hand_poses[0] if result and result.hand_poses else None
+        return bool(target and target.matches(pose))
+
+    def _draw_guided_overlay(self, frame: np.ndarray, matches: bool) -> None:
+        target = self._current_guided_target()
+        if target is None:
+            return
+        height, width = frame.shape[:2]
+        x1, y1, x2, y2 = target.bounds
+        start = (int(x1 * width), int(y1 * height))
+        end = (int(x2 * width), int(y2 * height))
+        color = (116, 199, 72) if matches else (75, 184, 242)
+        cv2.rectangle(frame, start, end, color, 3)
+        label = f"GUIA {self.guided_index + 1}/{len(self.guided_targets)}: {target.title}"
+        cv2.putText(
+            frame,
+            label,
+            (start[0], max(28, start[1] - 10)),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.65,
+            color,
+            2,
+            cv2.LINE_AA,
+        )
+
+    def toggle_guided_capture(self) -> None:
+        if self.guided_active:
+            self._stop_guided_capture("Captura guiada detenida.")
+            return
+        if self.selected_label is None:
+            messagebox.showinfo("Selecciona un gesto", "Selecciona primero el gesto que quieres capturar.", parent=self.root)
+            return
+        current = self.sample_counts.get(self.selected_label, 0)
+        remaining = max(self.config.target_samples_per_gesture - current, 1)
+        initial = min(12, max(3, remaining))
+        total = simpledialog.askinteger(
+            "Captura guiada",
+            "Cuantas muestras nuevas quieres capturar?",
+            initialvalue=initial,
+            minvalue=3,
+            maxvalue=30,
+            parent=self.root,
+        )
+        if total is None:
+            return
+        self.guided_active = True
+        self.guided_label = self.selected_label
+        self.guided_targets = build_capture_targets(total)
+        self.guided_index = 0
+        self.guided_next_capture = time.monotonic() + 0.6
+        self.stability.reset()
+        self.guided_button.configure(text="Detener captura guiada", bg=RED, fg=TEXT)
+        self.guided_var.set(f"Guiada 1/{total}: {self.guided_targets[0].title}")
+        self.notice_var.set(
+            "Mantén el mismo gesto y mueve la mano al cuadro indicado. La foto se tomara automaticamente."
+        )
+
+    def _update_guided_capture(self, stable: bool, matches: bool) -> None:
+        if not self.guided_active or not stable or not matches or not self.ready:
+            return
+        if self.selected_label != self.guided_label:
+            self._stop_guided_capture("La sesion se detuvo porque cambio el gesto activo.")
+            return
+        if not self.capture_sample():
+            return
+        completed = self.guided_index + 1
+        total = len(self.guided_targets)
+        self.guided_index = completed
+        self.stability.reset()
+        self.ready = False
+        if completed >= total:
+            label = self.guided_label
+            self._stop_guided_capture(f"Sesion guiada terminada: {total} muestras nuevas para '{label}'.")
+            return
+        self.guided_next_capture = time.monotonic() + max(0.9, self.config.capture_min_interval_seconds)
+        target = self.guided_targets[self.guided_index]
+        self.guided_var.set(f"Guiada {self.guided_index + 1}/{total}: {target.title}")
+        self.notice_var.set(f"Muestra {completed}/{total} guardada. {target.instruction}.")
+
+    def _stop_guided_capture(self, message: str) -> None:
+        self.guided_active = False
+        self.guided_label = None
+        self.guided_targets = []
+        self.guided_index = 0
+        self.guided_next_capture = float("inf")
+        self.stability.reset()
+        self.guided_button.configure(text="Iniciar captura guiada", bg=CYAN, fg="#071014")
+        self.guided_var.set("Captura manual")
+        self.notice_var.set(message)
 
     def _draw_progress(self, value: float, color: str) -> None:
         self.progress_canvas.delete("all")
@@ -717,6 +865,8 @@ class GestureStudio:
     def select_gesture(self, label: str) -> None:
         if label not in self.gesture_map:
             return
+        if self.guided_active and label != self.guided_label:
+            self._stop_guided_capture("Captura guiada detenida al cambiar de gesto.")
         self.selected_label = label
         self.stability.reset()
         self._rebuild_gesture_list()
@@ -784,7 +934,8 @@ class GestureStudio:
         label = self.selected_label
         records = capture_records(label)
         vector_count = self.sample_counts.get(label, 0)
-        missing_photos = max(vector_count - len(records), 0)
+        trained_references = self.reference_training_counts.get(label, 0)
+        missing_photos = max(vector_count - len(records) - trained_references, 0)
 
         window = tk.Toplevel(self.root)
         window.title(f"Capturas - {label}")
@@ -802,7 +953,7 @@ class GestureStudio:
             fg=TEXT,
             font=("Segoe UI Semibold", 16),
         ).pack(anchor="w", padx=18, pady=(10, 0))
-        summary = f"{vector_count} vectores | {len(records)} fotos revisables"
+        summary = f"{vector_count} muestras | {len(records)} fotos de camara"
         if missing_photos:
             summary += f" | {missing_photos} vectores antiguos sin foto"
         tk.Label(
@@ -855,6 +1006,263 @@ class GestureStudio:
                 fg=MUTED,
                 font=("Segoe UI", 8),
             ).pack(anchor="w", padx=8, pady=(0, 7))
+
+    def open_sample_manager(self) -> None:
+        if self.selected_label is None:
+            messagebox.showinfo("Selecciona un gesto", "Selecciona primero el gesto que quieres revisar.", parent=self.root)
+            return
+        label = self.selected_label
+        window = tk.Toplevel(self.root)
+        window.title(f"Administrar muestras - {label}")
+        window.geometry("1040x680")
+        window.minsize(820, 560)
+        window.configure(bg=BG)
+
+        header = tk.Frame(window, bg=PANEL, height=72, highlightthickness=1, highlightbackground=BORDER)
+        header.pack(fill="x")
+        header.pack_propagate(False)
+        tk.Label(
+            header,
+            text=f"MUESTRAS: {label}",
+            bg=PANEL,
+            fg=TEXT,
+            font=("Segoe UI Semibold", 15),
+        ).pack(anchor="w", padx=18, pady=(10, 0))
+        summary_var = tk.StringVar()
+        tk.Label(header, textvariable=summary_var, bg=PANEL, fg=MUTED, font=("Segoe UI", 9)).pack(
+            anchor="w", padx=18
+        )
+
+        body = tk.Frame(window, bg=BG)
+        body.pack(fill="both", expand=True, padx=12, pady=12)
+        body.grid_columnconfigure(0, weight=3)
+        body.grid_columnconfigure(1, weight=2)
+        body.grid_rowconfigure(1, weight=1)
+
+        toolbar = tk.Frame(body, bg=BG)
+        toolbar.grid(row=0, column=0, sticky="ew", pady=(0, 8))
+        tk.Label(toolbar, text="Mostrar", bg=BG, fg=MUTED, font=("Segoe UI Semibold", 9)).pack(side="left")
+        filter_var = tk.StringVar(value="Todas")
+        filter_box = ttk.Combobox(
+            toolbar,
+            textvariable=filter_var,
+            values=("Todas", "Con foto", "Solo vector", "Referencias"),
+            state="readonly",
+            width=18,
+        )
+        filter_box.pack(side="left", padx=8)
+
+        table_host = tk.Frame(body, bg=PANEL, highlightthickness=1, highlightbackground=BORDER)
+        table_host.grid(row=1, column=0, sticky="nsew", padx=(0, 8))
+        table_host.grid_rowconfigure(0, weight=1)
+        table_host.grid_columnconfigure(0, weight=1)
+        style = ttk.Style(window)
+        if "clam" in style.theme_names():
+            style.theme_use("clam")
+        style.configure(
+            "Samples.Treeview",
+            background=PANEL_ALT,
+            fieldbackground=PANEL_ALT,
+            foreground=TEXT,
+            rowheight=32,
+            borderwidth=0,
+            font=("Segoe UI", 9),
+        )
+        style.map(
+            "Samples.Treeview",
+            background=[("selected", "#087fca")],
+            foreground=[("selected", TEXT)],
+        )
+        style.configure(
+            "Samples.Treeview.Heading",
+            background=PANEL,
+            foreground=TEXT,
+            relief="flat",
+            font=("Segoe UI Semibold", 9),
+        )
+        tree = ttk.Treeview(
+            table_host,
+            columns=("origin", "date"),
+            show="tree headings",
+            style="Samples.Treeview",
+            selectmode="browse",
+        )
+        tree.heading("#0", text="Muestra")
+        tree.heading("origin", text="Origen")
+        tree.heading("date", text="Fecha")
+        tree.column("#0", width=130, minwidth=100)
+        tree.column("origin", width=150, minwidth=110)
+        tree.column("date", width=170, minwidth=120)
+        table_scroll = tk.Scrollbar(table_host, orient="vertical", command=tree.yview)
+        tree.configure(yscrollcommand=table_scroll.set)
+        tree.grid(row=0, column=0, sticky="nsew")
+        table_scroll.grid(row=0, column=1, sticky="ns")
+
+        preview = tk.Frame(body, bg=PANEL, highlightthickness=1, highlightbackground=BORDER)
+        preview.grid(row=0, column=1, rowspan=2, sticky="nsew")
+        tk.Label(
+            preview,
+            text="MUESTRA SELECCIONADA",
+            bg=PANEL,
+            fg=MUTED,
+            font=("Segoe UI Semibold", 9),
+        ).pack(anchor="w", padx=14, pady=(14, 8))
+        placeholder = solid_photo(340, 230, "#0c1014")
+        preview_label = tk.Label(
+            preview,
+            image=placeholder,
+            text="Selecciona una muestra",
+            compound="center",
+            bg="#0c1014",
+            fg=MUTED,
+            font=("Segoe UI", 10),
+        )
+        preview_label.pack(fill="x", padx=14)
+        details_var = tk.StringVar(value="")
+        tk.Label(
+            preview,
+            textvariable=details_var,
+            bg=PANEL,
+            fg=TEXT,
+            justify="left",
+            anchor="nw",
+            wraplength=330,
+            font=("Segoe UI", 9),
+        ).pack(fill="x", padx=16, pady=14)
+        delete_button = self._button(preview, "Eliminar muestra", lambda: None, bg=RED, fg=TEXT)
+        delete_button.pack(side="bottom", fill="x", padx=14, pady=14)
+        delete_button.configure(state="disabled")
+
+        records: list[TrainingSampleRecord] = []
+        record_by_item: dict[str, TrainingSampleRecord] = {}
+        reference_by_id = {}
+        window.preview_photo = placeholder
+
+        def source_for(record: TrainingSampleRecord) -> str:
+            if record.sample_id and record.sample_id in reference_by_id:
+                return "reference"
+            return record.source
+
+        def source_text(source: str) -> str:
+            return {
+                "camera": "Camara",
+                "reference": "Referencia",
+                "vector_only": "Solo vector",
+                "manifest_only": "Sin foto",
+            }.get(source, source)
+
+        def filtered(record: TrainingSampleRecord) -> bool:
+            source = source_for(record)
+            selected_filter = filter_var.get()
+            if selected_filter == "Con foto":
+                return source == "camera"
+            if selected_filter == "Solo vector":
+                return source in {"vector_only", "manifest_only"}
+            if selected_filter == "Referencias":
+                return source == "reference"
+            return True
+
+        def selected_record() -> TrainingSampleRecord | None:
+            selected = tree.selection()
+            return record_by_item.get(selected[0]) if selected else None
+
+        def show_record(_event=None) -> None:
+            record = selected_record()
+            if record is None:
+                window.preview_photo = placeholder
+                preview_label.configure(image=placeholder, text="Selecciona una muestra")
+                details_var.set("")
+                delete_button.configure(state="disabled")
+                return
+            source = source_for(record)
+            image_path = record.frame_path
+            if source == "reference" and record.sample_id:
+                image_path = reference_by_id[record.sample_id].annotated_path
+            image = cv2.imread(str(image_path), cv2.IMREAD_UNCHANGED) if image_path else None
+            if image is not None:
+                window.preview_photo = bgr_to_photo(image, 340, 230)
+                preview_label.configure(image=window.preview_photo, text="")
+            else:
+                window.preview_photo = placeholder
+                preview_label.configure(image=placeholder, text="Vector numerico sin foto")
+            sample_id = record.sample_id or "registro antiguo"
+            captured_at = record.captured_at or "sin fecha guardada"
+            details_var.set(
+                f"Muestra {record.ordinal}\n"
+                f"Origen: {source_text(source)}\n"
+                f"Fecha: {captured_at}\n"
+                f"ID: {sample_id}"
+            )
+            delete_button.configure(state="normal")
+
+        def refresh_manager(*_args) -> None:
+            nonlocal records, reference_by_id
+            records = load_sample_records(label)
+            reference_by_id = {record.reference_id: record for record in load_reference_records(label)}
+            for item in tree.get_children():
+                tree.delete(item)
+            record_by_item.clear()
+            photo_count = sum(source_for(record) == "camera" for record in records)
+            reference_count = sum(source_for(record) == "reference" for record in records)
+            vector_only = len(records) - photo_count - reference_count
+            summary_var.set(
+                f"{len(records)} muestras | {photo_count} con foto | "
+                f"{vector_only} solo vector | {reference_count} referencias de entrenamiento"
+            )
+            for record in records:
+                if not filtered(record):
+                    continue
+                item = f"sample-{record.csv_row_index}"
+                source = source_for(record)
+                tree.insert(
+                    "",
+                    "end",
+                    iid=item,
+                    text=f"Muestra {record.ordinal}",
+                    values=(source_text(source), record.captured_at or "-"),
+                )
+                record_by_item[item] = record
+            children = tree.get_children()
+            if children:
+                tree.selection_set(children[-1])
+                tree.focus(children[-1])
+                tree.see(children[-1])
+            show_record()
+
+        def delete_selected() -> None:
+            record = selected_record()
+            if record is None:
+                return
+            source = source_for(record)
+            confirmed = messagebox.askyesno(
+                "Eliminar muestra",
+                f"Eliminar la muestra {record.ordinal} ({source_text(source)}) de '{label}'?",
+                parent=window,
+            )
+            if not confirmed:
+                return
+            removed, _removed_path, sample_id = remove_sample_record(record)
+            if not removed:
+                messagebox.showerror("No pude eliminar", "La lista cambio; actualiza e intenta de nuevo.", parent=window)
+                refresh_manager()
+                return
+            if source == "reference" and sample_id:
+                mark_reference_not_training(sample_id)
+            self.sample_counts = load_sample_counts(list(self.gesture_map))
+            self.photo_counts[label] = len(capture_records(label))
+            references = load_reference_records(label)
+            self.reference_counts[label] = len(references)
+            self.reference_training_counts[label] = sum(record.used_for_training for record in references)
+            self._rebuild_gesture_list()
+            self._refresh_selected_panel()
+            self.model_var.set(self._model_status())
+            self.notice_var.set(f"Muestra {record.ordinal} eliminada de '{label}'.")
+            refresh_manager()
+
+        delete_button.configure(command=delete_selected)
+        tree.bind("<<TreeviewSelect>>", show_record)
+        filter_box.bind("<<ComboboxSelected>>", refresh_manager)
+        refresh_manager()
 
     def add_reference(self) -> None:
         if self.selected_label is None:
@@ -1221,16 +1629,16 @@ class GestureStudio:
             return None
         return path
 
-    def capture_sample(self) -> None:
+    def capture_sample(self) -> bool:
         if not self.ready or self.latest_result is None or self.latest_capture_frame is None:
             self.notice_var.set("Espera a que la mano este detectada y el indicador se ponga verde.")
-            return
+            return False
         if self.selected_label is None:
-            return
+            return False
         now = time.monotonic()
         if now - self.last_capture_time < self.config.capture_min_interval_seconds:
             self.notice_var.set("Espera un instante antes de capturar otra muestra.")
-            return
+            return False
 
         label = self.selected_label
         sample_id = create_sample_id()
@@ -1249,6 +1657,7 @@ class GestureStudio:
         self.notice_var.set(
             f"Muestra {self.sample_counts[label]} guardada para '{label}'. Cambia un poco el angulo para la siguiente."
         )
+        return True
 
     def undo_sample(self) -> None:
         if self.selected_label is None:
@@ -1425,12 +1834,20 @@ def open_reference_smoke_test(studio: GestureStudio) -> None:
     studio.open_reference_gallery()
 
 
+def open_manager_smoke_test(studio: GestureStudio) -> None:
+    if studio.sample_counts:
+        label = max(studio.sample_counts, key=studio.sample_counts.get)
+        studio.select_gesture(label)
+    studio.open_sample_manager()
+
+
 def main() -> None:
     if "--smoke-test" in sys.argv:
         smoke_test()
         return
 
     ui_smoke_test = "--ui-smoke-test" in sys.argv
+    manager_smoke_test = "--manager-smoke-test" in sys.argv
     root = tk.Tk()
     try:
         config = load_config()
@@ -1444,9 +1861,14 @@ def main() -> None:
     if ui_smoke_test:
         root.after(900, lambda: open_reference_smoke_test(studio))
         root.after(7000, studio.close)
+    elif manager_smoke_test:
+        root.after(900, lambda: open_manager_smoke_test(studio))
+        root.after(7000, studio.close)
     root.mainloop()
     if ui_smoke_test:
         print("studio_ui=ok")
+    elif manager_smoke_test:
+        print("studio_manager_ui=ok")
 
 
 if __name__ == "__main__":

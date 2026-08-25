@@ -15,9 +15,19 @@ Haz doble clic en `iniciar_estudio.bat` para abrir Gesture Studio. Desde una sol
 - Ver la camara, mano, cara y landmarks en vivo.
 - Ver una caja por mano con posicion X/Y, zona, giro e inclinacion.
 - Capturar y deshacer muestras.
+- Ejecutar una captura guiada automatica por zonas de la camara.
+- Administrar muestras individuales, incluidas las antiguas que solo tienen vector.
 - Entrenar el modelo y abrir el reconocimiento.
 
 La columna izquierda contiene el menu de imagenes. El centro muestra la camara y los vectores. La columna derecha confirma el gesto activo, su imagen, contador y ultima captura.
+
+### Captura guiada
+
+Selecciona un gesto y pulsa `Iniciar captura guiada`. Elige cuantas muestras quieres crear y manten el mismo gesto mientras mueves la mano entre los objetivos de centro, izquierda, derecha, arriba y abajo. La aplicacion captura automaticamente cuando la mano entra en el cuadro y el vector permanece estable.
+
+### Administrador de muestras
+
+Pulsa `Administrar muestras` para filtrar y revisar muestras con foto, referencias de entrenamiento y vectores antiguos sin imagen. Puedes eliminar una muestra concreta; si era de camara tambien se elimina su JPG, mientras que una referencia externa se conserva como guia y deja de participar en el entrenamiento.
 
 ### Telemetria de manos
 

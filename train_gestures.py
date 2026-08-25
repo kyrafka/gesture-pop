@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 import re
 import time
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
@@ -26,6 +27,17 @@ CAPTURE_DIR = DATA_DIR / "captures"
 SAMPLES_FILE = DATA_DIR / "gesture_samples.csv"
 MANIFEST_FILE = DATA_DIR / "capture_manifest.csv"
 MODEL_FILE = MODEL_DIR / "gesture_model.joblib"
+
+
+@dataclass(frozen=True)
+class TrainingSampleRecord:
+    csv_row_index: int
+    label: str
+    ordinal: int
+    sample_id: str | None
+    frame_path: Path | None
+    captured_at: str
+    source: str
 
 
 def main() -> None:
@@ -289,6 +301,117 @@ def load_sample_counts(labels: list[str]) -> dict[str, int]:
             if row and row[0] in counts:
                 counts[row[0]] += 1
     return counts
+
+
+def load_sample_records(label: str | None = None) -> list[TrainingSampleRecord]:
+    if not SAMPLES_FILE.exists():
+        return []
+
+    with SAMPLES_FILE.open("r", newline="", encoding="utf-8") as fh:
+        sample_rows = list(csv.reader(fh))
+    if len(sample_rows) < 2:
+        return []
+
+    manifest_by_label: dict[str, list[dict[str, str]]] = {}
+    if MANIFEST_FILE.exists():
+        with MANIFEST_FILE.open("r", newline="", encoding="utf-8") as fh:
+            for row in csv.DictReader(fh):
+                row_label = row.get("label", "")
+                if row_label:
+                    manifest_by_label.setdefault(row_label, []).append(row)
+
+    sample_indices_by_label: dict[str, list[int]] = {}
+    for csv_index, row in enumerate(sample_rows[1:], start=1):
+        if not row:
+            continue
+        row_label = row[0]
+        if label is None or row_label == label:
+            sample_indices_by_label.setdefault(row_label, []).append(csv_index)
+
+    manifest_for_index: dict[int, dict[str, str]] = {}
+    for row_label, csv_indices in sample_indices_by_label.items():
+        manifests = manifest_by_label.get(row_label, [])
+        matched_count = min(len(csv_indices), len(manifests))
+        if not matched_count:
+            continue
+        for csv_index, manifest in zip(csv_indices[-matched_count:], manifests[-matched_count:]):
+            manifest_for_index[csv_index] = manifest
+
+    records: list[TrainingSampleRecord] = []
+    for row_label, csv_indices in sample_indices_by_label.items():
+        for ordinal, csv_index in enumerate(csv_indices, start=1):
+            manifest = manifest_for_index.get(csv_index)
+            frame_path = _resolve_manifest_frame(manifest.get("frame_path", "")) if manifest else None
+            sample_id = (manifest.get("sample_id") or None) if manifest else None
+            source = "camera" if frame_path else "manifest_only" if sample_id else "vector_only"
+            records.append(
+                TrainingSampleRecord(
+                    csv_row_index=csv_index,
+                    label=row_label,
+                    ordinal=ordinal,
+                    sample_id=sample_id,
+                    frame_path=frame_path,
+                    captured_at=manifest.get("captured_at", "") if manifest else "",
+                    source=source,
+                )
+            )
+    records.sort(key=lambda record: record.csv_row_index)
+    return records
+
+
+def remove_sample_record(record: TrainingSampleRecord) -> tuple[bool, Path | None, str | None]:
+    if not SAMPLES_FILE.exists():
+        return False, None, None
+    with SAMPLES_FILE.open("r", newline="", encoding="utf-8") as fh:
+        sample_rows = list(csv.reader(fh))
+    if (
+        record.csv_row_index < 1
+        or record.csv_row_index >= len(sample_rows)
+        or not sample_rows[record.csv_row_index]
+        or sample_rows[record.csv_row_index][0] != record.label
+    ):
+        return False, None, None
+
+    sample_rows.pop(record.csv_row_index)
+    with SAMPLES_FILE.open("w", newline="", encoding="utf-8") as fh:
+        csv.writer(fh).writerows(sample_rows)
+
+    removed_path: Path | None = None
+    if record.sample_id and MANIFEST_FILE.exists():
+        with MANIFEST_FILE.open("r", newline="", encoding="utf-8") as fh:
+            manifest_rows = list(csv.reader(fh))
+        manifest_index = next(
+            (
+                index
+                for index in range(1, len(manifest_rows))
+                if len(manifest_rows[index]) >= 2
+                and manifest_rows[index][0] == record.sample_id
+                and manifest_rows[index][1] == record.label
+            ),
+            None,
+        )
+        if manifest_index is not None:
+            manifest_rows.pop(manifest_index)
+            with MANIFEST_FILE.open("w", newline="", encoding="utf-8") as fh:
+                csv.writer(fh).writerows(manifest_rows)
+
+    if record.frame_path is not None:
+        path = record.frame_path.resolve()
+        if path.is_relative_to(CAPTURE_DIR.resolve()) and path.is_file():
+            path.unlink()
+            removed_path = path
+    return True, removed_path, record.sample_id
+
+
+def _resolve_manifest_frame(value: str) -> Path | None:
+    if not value:
+        return None
+    raw = Path(value)
+    path = raw if raw.is_absolute() else ROOT / raw
+    path = path.resolve()
+    if path.is_relative_to(CAPTURE_DIR.resolve()) and path.is_file():
+        return path
+    return None
 
 
 def is_hand_ready(result: FeatureResult | None) -> bool:
