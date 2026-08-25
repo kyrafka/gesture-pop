@@ -12,7 +12,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 from PySide6.QtCore import QObject, QSize, Qt, QThread, Signal
-from PySide6.QtGui import QAction, QCloseEvent, QIcon, QImage, QPixmap
+from PySide6.QtGui import QAction, QCloseEvent, QIcon, QImage, QKeySequence, QPixmap, QShortcut
 from PySide6.QtWidgets import (
     QApplication,
     QButtonGroup,
@@ -31,8 +31,6 @@ from PySide6.QtWidgets import (
     QPushButton,
     QScrollArea,
     QSizePolicy,
-    QStackedWidget,
-    QStyle,
     QVBoxLayout,
     QWidget,
 )
@@ -42,6 +40,7 @@ from gesture_features import FeatureResult, LandmarkFeatureExtractor, draw_landm
 from gesture_launcher import MODEL_FILE
 from gesture_runtime import FeatureStabilityTracker
 from guided_capture import CaptureTarget, build_capture_targets
+from qt_components import FadeController, FadingStackedWidget, Toast, app_icon, apply_button_icon
 from qt_theme import COLORS, application_stylesheet, configure_application_font
 from reference_images import analyze_reference, load_reference_records, store_reference
 from train_gestures import (
@@ -154,6 +153,9 @@ class ReferenceDialog(QDialog):
         guide = QPushButton("Guardar como guia")
         train = QPushButton("Aceptar y entrenar")
         train.setObjectName("primary")
+        apply_button_icon(cancel, "fa6s.xmark")
+        apply_button_icon(guide, "fa6s.bookmark")
+        apply_button_icon(train, "fa6s.check", "#ffffff")
         train.setEnabled(analysis.quality.can_accept)
         cancel.clicked.connect(self.reject)
         guide.clicked.connect(lambda: self._finish("guide"))
@@ -202,6 +204,8 @@ class GestureStudioQt(QMainWindow):
         self.guided_index = 0
         self.guided_last_capture = 0.0
         self.nav_buttons: list[QPushButton] = []
+        self.fade_controller = FadeController(self)
+        self.toast: Toast | None = None
 
         self.setWindowTitle("Gesture Pop Studio")
         self.setMinimumSize(1180, 760)
@@ -209,6 +213,7 @@ class GestureStudioQt(QMainWindow):
         self.setStyleSheet(application_stylesheet())
         self._build_ui()
         self._build_menu()
+        self._configure_interactions()
         self.refresh_all()
         if start_camera:
             self.start_camera()
@@ -228,7 +233,7 @@ class GestureStudioQt(QMainWindow):
         content_layout.setContentsMargins(24, 18, 24, 18)
         content_layout.setSpacing(14)
         content_layout.addLayout(self._build_topbar())
-        self.pages = QStackedWidget()
+        self.pages = FadingStackedWidget()
         self.capture_page = self._build_capture_page()
         self.dataset_page = self._build_dataset_page()
         self.training_page = self._build_training_page()
@@ -243,21 +248,22 @@ class GestureStudioQt(QMainWindow):
     def _build_sidebar(self) -> QWidget:
         sidebar = QWidget()
         sidebar.setObjectName("sidebar")
-        sidebar.setFixedWidth(258)
+        sidebar.setFixedWidth(244)
         layout = QVBoxLayout(sidebar)
         layout.setContentsMargins(16, 18, 16, 16)
         layout.setSpacing(8)
 
         brand_row = QHBoxLayout()
-        mark = QLabel("G")
+        mark = QLabel()
         mark.setObjectName("brandMark")
+        mark.setPixmap(app_icon("fa6s.hand", COLORS["blue"]).pixmap(23, 23))
         brand = QLabel("Gesture Pop")
         brand.setObjectName("brand")
         brand_row.addWidget(mark)
         brand_row.addWidget(brand)
         brand_row.addStretch()
         layout.addLayout(brand_row)
-        subtitle = QLabel("GESTURE STUDIO")
+        subtitle = QLabel("ESTUDIO LOCAL")
         subtitle.setObjectName("eyebrow")
         layout.addWidget(subtitle)
         layout.addSpacing(10)
@@ -265,16 +271,16 @@ class GestureStudioQt(QMainWindow):
         nav_group = QButtonGroup(self)
         nav_group.setExclusive(True)
         nav_specs = [
-            ("Captura", QStyle.StandardPixmap.SP_ComputerIcon),
-            ("Muestras", QStyle.StandardPixmap.SP_FileDialogDetailedView),
-            ("Entrenamiento", QStyle.StandardPixmap.SP_DialogApplyButton),
-            ("Reconocimiento", QStyle.StandardPixmap.SP_MediaPlay),
+            ("Captura", "fa6s.camera"),
+            ("Muestras", "fa6s.images"),
+            ("Entrenamiento", "fa6s.chart-simple"),
+            ("Reconocimiento", "fa6s.play"),
         ]
-        for index, (text, icon_id) in enumerate(nav_specs):
+        for index, (text, icon_name) in enumerate(nav_specs):
             button = QPushButton(text)
             button.setObjectName("navButton")
             button.setCheckable(True)
-            button.setIcon(self.style().standardIcon(icon_id))
+            apply_button_icon(button, icon_name)
             button.setIconSize(QSize(18, 18))
             button.clicked.connect(lambda checked=False, page=index: self._switch_page(page))
             nav_group.addButton(button)
@@ -300,11 +306,11 @@ class GestureStudioQt(QMainWindow):
 
         image_actions = QHBoxLayout()
         add = QPushButton("Agregar")
-        add.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_FileDialogNewFolder))
+        apply_button_icon(add, "fa6s.plus")
         add.setToolTip("Agregar una nueva imagen y gesto")
         add.clicked.connect(self.add_gesture)
         replace = QPushButton()
-        replace.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_BrowserReload))
+        apply_button_icon(replace, "fa6s.rotate")
         replace.setToolTip("Reemplazar la imagen del gesto seleccionado")
         replace.setFixedWidth(42)
         replace.clicked.connect(self.replace_image)
@@ -318,7 +324,7 @@ class GestureStudioQt(QMainWindow):
         title_box = QVBoxLayout()
         self.page_title = QLabel("Captura")
         self.page_title.setObjectName("pageTitle")
-        self.page_subtitle = QLabel("Entrena un gesto con vectores de mano y cara")
+        self.page_subtitle = QLabel("Camara y vectores en vivo")
         self.page_subtitle.setObjectName("muted")
         title_box.addWidget(self.page_title)
         title_box.addWidget(self.page_subtitle)
@@ -328,7 +334,7 @@ class GestureStudioQt(QMainWindow):
         self.model_badge.setObjectName("warning")
         layout.addWidget(self.model_badge)
         camera_button = QPushButton()
-        camera_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_BrowserReload))
+        apply_button_icon(camera_button, "fa6s.rotate")
         camera_button.setToolTip("Reiniciar camara")
         camera_button.setFixedWidth(42)
         camera_button.clicked.connect(self.restart_camera)
@@ -346,8 +352,9 @@ class GestureStudioQt(QMainWindow):
         camera_layout = QVBoxLayout(camera_panel)
         camera_layout.setContentsMargins(12, 12, 12, 12)
         camera_header = QHBoxLayout()
-        self.camera_dot = QLabel("●")
-        self.camera_dot.setStyleSheet(f"color: {COLORS['amber']}; font-size: 13pt;")
+        self.camera_dot = QLabel()
+        self.camera_dot.setPixmap(app_icon("fa6s.circle", COLORS["amber"]).pixmap(9, 9))
+        self.camera_dot.setFixedWidth(12)
         self.camera_status = QLabel("Camara detenida")
         self.camera_status.setObjectName("muted")
         camera_header.addWidget(self.camera_dot)
@@ -379,14 +386,14 @@ class GestureStudioQt(QMainWindow):
         controls = QHBoxLayout()
         self.capture_button = QPushButton("Capturar gesto")
         self.capture_button.setObjectName("primary")
-        self.capture_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_DialogSaveButton))
+        apply_button_icon(self.capture_button, "fa6s.camera", "#ffffff")
         self.capture_button.setEnabled(False)
         self.capture_button.clicked.connect(self.capture_sample)
         self.guided_button = QPushButton("Captura guiada")
-        self.guided_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_ArrowForward))
+        apply_button_icon(self.guided_button, "fa6s.route")
         self.guided_button.clicked.connect(self.toggle_guided_capture)
         undo = QPushButton()
-        undo.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_ArrowBack))
+        apply_button_icon(undo, "fa6s.rotate-left")
         undo.setToolTip("Deshacer la ultima muestra")
         undo.setFixedWidth(42)
         undo.clicked.connect(self.undo_sample)
@@ -395,7 +402,7 @@ class GestureStudioQt(QMainWindow):
         controls.addWidget(undo)
         controls.addStretch()
         reference = QPushButton("Subir referencia")
-        reference.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_DialogOpenButton))
+        apply_button_icon(reference, "fa6s.image")
         reference.clicked.connect(self.add_reference)
         controls.addWidget(reference)
         camera_layout.addLayout(controls)
@@ -464,7 +471,7 @@ class GestureStudioQt(QMainWindow):
         header.addWidget(self.dataset_summary)
         header.addStretch()
         refresh = QPushButton()
-        refresh.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_BrowserReload))
+        apply_button_icon(refresh, "fa6s.rotate")
         refresh.setToolTip("Actualizar galeria")
         refresh.setFixedWidth(42)
         refresh.clicked.connect(self.refresh_dataset)
@@ -491,7 +498,7 @@ class GestureStudioQt(QMainWindow):
         text = QVBoxLayout()
         title = QLabel("Preparar el modelo")
         title.setObjectName("pageTitle")
-        copy = QLabel("Cada clase necesita al menos 3 muestras. Para resultados estables apunta a 20 y varia distancia, luz y angulo.")
+        copy = QLabel("Minimo 3 por gesto. Recomendado 20 con variaciones de luz, distancia y angulo.")
         copy.setObjectName("muted")
         copy.setWordWrap(True)
         text.addWidget(title)
@@ -499,7 +506,7 @@ class GestureStudioQt(QMainWindow):
         intro_layout.addLayout(text, 1)
         self.train_button = QPushButton("Entrenar modelo")
         self.train_button.setObjectName("warningButton")
-        self.train_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_DialogApplyButton))
+        apply_button_icon(self.train_button, "fa6s.gears", "#181106")
         self.train_button.clicked.connect(self.train_current_model)
         intro_layout.addWidget(self.train_button)
         layout.addWidget(intro)
@@ -527,24 +534,22 @@ class GestureStudioQt(QMainWindow):
         eyebrow.setObjectName("eyebrow")
         title = QLabel("Haz el gesto. Abre la imagen.")
         title.setObjectName("pageTitle")
-        copy = QLabel(
-            "El reconocedor espera varios frames coincidentes, abre la imagen asignada y se rearma cuando sueltas el gesto."
-        )
+        copy = QLabel("Manten el gesto estable para activar la imagen asignada.")
         copy.setObjectName("muted")
         copy.setWordWrap(True)
         self.recognition_model_status = QLabel()
         self.recognition_model_status.setWordWrap(True)
-        launch = QPushButton("Iniciar reconocimiento")
-        launch.setObjectName("primary")
-        launch.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_MediaPlay))
-        launch.clicked.connect(self.launch_recognition)
+        self.launch_button = QPushButton("Iniciar reconocimiento")
+        self.launch_button.setObjectName("primary")
+        apply_button_icon(self.launch_button, "fa6s.play", "#ffffff")
+        self.launch_button.clicked.connect(self.launch_recognition)
         panel_layout.addWidget(eyebrow)
         panel_layout.addWidget(title)
         panel_layout.addWidget(copy)
         panel_layout.addSpacing(18)
         panel_layout.addWidget(self.recognition_model_status)
         panel_layout.addStretch()
-        panel_layout.addWidget(launch)
+        panel_layout.addWidget(self.launch_button)
         layout.addWidget(panel, 2)
 
         action_panel = QFrame()
@@ -562,24 +567,26 @@ class GestureStudioQt(QMainWindow):
     def _build_menu(self) -> None:
         file_menu = self.menuBar().addMenu("Archivo")
         add_action = QAction("Agregar gesto", self)
+        add_action.setIcon(app_icon("fa6s.plus"))
         add_action.triggered.connect(self.add_gesture)
         file_menu.addAction(add_action)
         reference_action = QAction("Subir referencia", self)
+        reference_action.setIcon(app_icon("fa6s.image"))
         reference_action.triggered.connect(self.add_reference)
         file_menu.addAction(reference_action)
         file_menu.addSeparator()
         exit_action = QAction("Salir", self)
+        exit_action.setIcon(app_icon("fa6s.xmark"))
         exit_action.triggered.connect(self.close)
         file_menu.addAction(exit_action)
 
     def _switch_page(self, index: int) -> None:
         titles = [
-            ("Captura", "Entrena un gesto con vectores de mano y cara"),
-            ("Muestras", "Revisa que imagenes y vectores alimentan cada clase"),
-            ("Entrenamiento", "Comprueba la cobertura y crea el clasificador"),
-            ("Reconocimiento", "Ejecuta el modelo y lanza la imagen asociada"),
+            ("Captura", "Camara y vectores en vivo"),
+            ("Muestras", "Fotos y vectores del dataset"),
+            ("Entrenamiento", "Cobertura por clase y modelo"),
+            ("Reconocimiento", "Gestos y acciones"),
         ]
-        self.pages.setCurrentIndex(index)
         self.page_title.setText(titles[index][0])
         self.page_subtitle.setText(titles[index][1])
         if index == 1:
@@ -588,6 +595,23 @@ class GestureStudioQt(QMainWindow):
             self.refresh_training()
         elif index == 3:
             self.refresh_recognition()
+        self.pages.setCurrentIndex(index)
+
+    def _configure_interactions(self) -> None:
+        for button in self.findChildren(QPushButton):
+            button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.gesture_list.viewport().setCursor(Qt.CursorShape.PointingHandCursor)
+
+        self.capture_shortcut = QShortcut(QKeySequence("Space"), self)
+        self.capture_shortcut.setContext(Qt.ShortcutContext.WindowShortcut)
+        self.capture_shortcut.activated.connect(self._capture_from_shortcut)
+        self.undo_shortcut = QShortcut(QKeySequence.StandardKey.Undo, self)
+        self.undo_shortcut.setContext(Qt.ShortcutContext.WindowShortcut)
+        self.undo_shortcut.activated.connect(self.undo_sample)
+
+    def _capture_from_shortcut(self) -> None:
+        if self.pages.currentIndex() == 0 and self.capture_button.isEnabled():
+            self.capture_button.click()
 
     def start_camera(self) -> None:
         if self.camera_thread is not None and self.camera_thread.isRunning():
@@ -627,8 +651,8 @@ class GestureStudioQt(QMainWindow):
         self.camera_worker = None
 
     def _on_camera_status(self, message: str, level: str) -> None:
-        colors = {"ok": COLORS["teal"], "busy": COLORS["amber"], "error": COLORS["coral"]}
-        self.camera_dot.setStyleSheet(f"color: {colors.get(level, COLORS['muted'])}; font-size: 13pt;")
+        colors = {"ok": COLORS["success"], "busy": COLORS["amber"], "error": COLORS["coral"]}
+        self.camera_dot.setPixmap(app_icon("fa6s.circle", colors.get(level, COLORS["muted"])).pixmap(9, 9))
         self.camera_status.setText(message)
         self.statusBar().showMessage(message)
         if level == "error":
@@ -724,6 +748,7 @@ class GestureStudioQt(QMainWindow):
         self.guided_index = 0
         self.guided_last_capture = 0.0
         self.guided_button.setText("Cancelar guia")
+        apply_button_icon(self.guided_button, "fa6s.xmark", COLORS["coral"])
         self.guided_button.setObjectName("danger")
         self.guided_button.style().unpolish(self.guided_button)
         self.guided_button.style().polish(self.guided_button)
@@ -745,6 +770,7 @@ class GestureStudioQt(QMainWindow):
         self.guided_targets = []
         self.guided_index = 0
         self.guided_button.setText("Captura guiada")
+        apply_button_icon(self.guided_button, "fa6s.route")
         self.guided_button.setObjectName("")
         self.guided_button.style().unpolish(self.guided_button)
         self.guided_button.style().polish(self.guided_button)
@@ -945,6 +971,7 @@ class GestureStudioQt(QMainWindow):
         self.target_preview.setPixmap(pixmap.scaled(
             275, 165, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation
         ))
+        self.fade_controller.pulse(self.target_preview)
 
     def refresh_dataset(self) -> None:
         clear_layout(self.dataset_grid)
@@ -1006,7 +1033,7 @@ class GestureStudioQt(QMainWindow):
         row.addLayout(texts, 1)
         if delete_callback is not None:
             delete_button = QPushButton()
-            delete_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_TrashIcon))
+            apply_button_icon(delete_button, "fa6s.trash", COLORS["coral"])
             delete_button.setToolTip("Eliminar esta muestra")
             delete_button.setObjectName("danger")
             delete_button.setFixedSize(38, 36)
@@ -1074,26 +1101,55 @@ class GestureStudioQt(QMainWindow):
         if MODEL_FILE.exists():
             self.recognition_model_status.setText("Modelo disponible. La camara del estudio se liberara al iniciar.")
             self.recognition_model_status.setObjectName("success")
+            self.launch_button.setEnabled(True)
+            self.launch_button.setToolTip("Abrir el reconocimiento en vivo")
         else:
             self.recognition_model_status.setText("Aun no existe un modelo entrenado.")
             self.recognition_model_status.setObjectName("warning")
+            self.launch_button.setEnabled(False)
+            self.launch_button.setToolTip("Entrena el modelo antes de iniciar")
         self.recognition_model_status.style().unpolish(self.recognition_model_status)
         self.recognition_model_status.style().polish(self.recognition_model_status)
 
     def _refresh_model_badge(self) -> None:
         if MODEL_FILE.exists():
-            self.model_badge.setText("● MODELO LISTO")
+            self.model_badge.setText("MODELO LISTO")
             self.model_badge.setObjectName("success")
         else:
-            self.model_badge.setText("● SIN ENTRENAR")
+            self.model_badge.setText("SIN ENTRENAR")
             self.model_badge.setObjectName("warning")
         self.model_badge.style().unpolish(self.model_badge)
         self.model_badge.style().polish(self.model_badge)
 
     def _notify(self, message: str, level: str = "ok") -> None:
         self.statusBar().showMessage(message, 5000)
-        colors = {"ok": COLORS["teal"], "warning": COLORS["amber"], "busy": COLORS["blue"]}
+        colors = {"ok": COLORS["success"], "warning": COLORS["amber"], "busy": COLORS["blue"]}
         self.statusBar().setStyleSheet(f"color: {colors.get(level, COLORS['muted'])};")
+        if self.toast is not None:
+            self.toast.hide()
+            self.toast.deleteLater()
+        toast = Toast(message, level, self.centralWidget())
+        self.toast = toast
+        toast.destroyed.connect(lambda _=None, target=toast: self._clear_toast(target))
+        self._position_toast()
+        toast.reveal()
+
+    def _position_toast(self) -> None:
+        if self.toast is None:
+            return
+        self.toast.adjustSize()
+        parent = self.centralWidget()
+        x = max(16, parent.width() - self.toast.width() - 24)
+        y = max(16, parent.height() - self.toast.height() - 24)
+        self.toast.move(x, y)
+
+    def _clear_toast(self, toast: Toast) -> None:
+        if self.toast is toast:
+            self.toast = None
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self._position_toast()
 
     def closeEvent(self, event: QCloseEvent) -> None:
         self.stop_camera()
@@ -1147,6 +1203,7 @@ def main() -> None:
     parser.add_argument("--smoke-test", action="store_true", help="Construye la interfaz sin abrir la camara")
     parser.add_argument("--screenshot", type=Path, help="Guarda una captura de la interfaz durante el smoke test")
     parser.add_argument("--page", type=int, choices=range(4), default=0, help="Pagina inicial para pruebas visuales")
+    parser.add_argument("--label", help="Gesto seleccionado durante las pruebas visuales")
     args = parser.parse_args()
     if args.smoke_test:
         os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -1155,11 +1212,16 @@ def main() -> None:
     app.setStyle("Fusion")
     configure_application_font(app)
     window = GestureStudioQt(start_camera=not args.smoke_test)
+    if args.label in window.gesture_map:
+        window.selected_label = args.label
+        window.refresh_all()
     window.nav_buttons[args.page].setChecked(True)
     window._switch_page(args.page)
     window.show()
     if args.smoke_test:
-        app.processEvents()
+        from PySide6.QtTest import QTest
+
+        QTest.qWait(240)
         if args.screenshot is not None:
             args.screenshot.parent.mkdir(parents=True, exist_ok=True)
             if not window.grab().save(str(args.screenshot)):

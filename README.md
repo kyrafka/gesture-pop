@@ -6,7 +6,7 @@ Los datos personales de entrenamiento no se publican: `.gitignore` excluye captu
 
 ## Interfaz visual Qt
 
-Haz doble clic en `iniciar_estudio.bat` para abrir Gesture Pop Studio. La interfaz usa PySide6/Qt y organiza el flujo en cuatro vistas:
+Haz doble clic en `iniciar_estudio.bat` para abrir Gesture Pop Studio. La interfaz usa PySide6/Qt, iconos QtAwesome y transiciones breves; organiza el flujo en cuatro vistas:
 
 - `Captura`: camara, landmarks, estabilidad, telemetria y captura guiada.
 - `Muestras`: galeria de fotos, referencias y vectores antiguos sin foto.

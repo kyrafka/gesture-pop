@@ -8,18 +8,22 @@ from PySide6.QtWidgets import QApplication
 
 
 COLORS = {
-    "canvas": "#0f1216",
-    "sidebar": "#151a20",
-    "surface": "#1b222a",
-    "surface_2": "#222b35",
-    "border": "#303b47",
-    "text": "#f3f6f8",
-    "muted": "#9eabb8",
-    "teal": "#3dd6b4",
-    "teal_dark": "#173f39",
-    "amber": "#f6bd55",
-    "coral": "#ff7b72",
-    "blue": "#75a7ff",
+    "canvas": "#101216",
+    "sidebar": "#14171b",
+    "surface": "#181c21",
+    "surface_2": "#20252c",
+    "border": "#2b3139",
+    "text": "#edf0f3",
+    "muted": "#929ba6",
+    "icon": "#aeb6c0",
+    "disabled": "#626a74",
+    "teal": "#39b980",
+    "teal_dark": "#183529",
+    "success": "#4bc38a",
+    "amber": "#dca94d",
+    "coral": "#e66f69",
+    "blue": "#5b8def",
+    "blue_dark": "#1a2740",
 }
 
 
@@ -48,39 +52,45 @@ def application_stylesheet() -> str:
         background: {COLORS['sidebar']};
         border-right: 1px solid {COLORS['border']};
     }}
-    QLabel#brand {{ font-size: 18pt; font-weight: 700; }}
-    QLabel#brandMark {{ color: {COLORS['teal']}; font-size: 20pt; font-weight: 800; }}
-    QLabel#pageTitle {{ font-size: 17pt; font-weight: 700; }}
-    QLabel#sectionTitle {{ font-size: 12pt; font-weight: 700; }}
+    QLabel#brand {{ font-size: 16pt; font-weight: 650; }}
+    QLabel#brandMark {{ color: {COLORS['blue']}; font-size: 18pt; font-weight: 750; }}
+    QLabel#pageTitle {{ font-size: 16pt; font-weight: 650; }}
+    QLabel#sectionTitle {{ font-size: 11pt; font-weight: 650; }}
     QLabel#muted, QLabel.muted {{ color: {COLORS['muted']}; }}
-    QLabel#eyebrow {{ color: {COLORS['teal']}; font-size: 9pt; font-weight: 700; }}
+    QLabel#eyebrow {{ color: {COLORS['muted']}; font-size: 8pt; font-weight: 650; }}
     QLabel#metric {{ font-size: 22pt; font-weight: 700; }}
-    QLabel#success {{ color: {COLORS['teal']}; font-weight: 600; }}
+    QLabel#success {{ color: {COLORS['success']}; font-weight: 600; }}
     QLabel#warning {{ color: {COLORS['amber']}; font-weight: 600; }}
     QLabel#error {{ color: {COLORS['coral']}; font-weight: 600; }}
     QFrame#panel, QFrame#metricPanel, QFrame#sampleCard {{
         background: {COLORS['surface']};
         border: 1px solid {COLORS['border']};
-        border-radius: 6px;
+        border-radius: 4px;
     }}
     QFrame#metricPanel {{ background: {COLORS['surface_2']}; }}
     QPushButton {{
-        min-height: 34px;
-        padding: 4px 12px;
+        min-height: 32px;
+        padding: 3px 11px;
         background: {COLORS['surface_2']};
         border: 1px solid {COLORS['border']};
-        border-radius: 5px;
-        font-weight: 600;
+        border-radius: 4px;
+        font-weight: 550;
     }}
-    QPushButton:hover {{ border-color: {COLORS['muted']}; background: #293440; }}
-    QPushButton:pressed {{ background: #11161c; }}
+    QPushButton:hover {{ border-color: #46505c; background: #252b33; }}
+    QPushButton:pressed {{ background: #12151a; border-color: {COLORS['blue']}; }}
     QPushButton:disabled {{ color: #66717d; background: #171c22; }}
     QPushButton#primary {{
-        color: #071511;
-        background: {COLORS['teal']};
-        border-color: {COLORS['teal']};
+        color: #ffffff;
+        background: {COLORS['blue']};
+        border-color: {COLORS['blue']};
     }}
-    QPushButton#primary:hover {{ background: #63e0c4; }}
+    QPushButton#primary:hover {{ background: #6f9df3; }}
+    QPushButton#primary:pressed {{ background: #4779d7; }}
+    QPushButton#primary:disabled {{
+        color: #737b85;
+        background: #1b2026;
+        border-color: #2c333b;
+    }}
     QPushButton#warningButton {{
         color: #181106;
         background: {COLORS['amber']};
@@ -93,18 +103,18 @@ def application_stylesheet() -> str:
     }}
     QPushButton#danger {{ color: {COLORS['coral']}; }}
     QPushButton#navButton {{
-        min-height: 40px;
+        min-height: 38px;
         padding: 3px 10px;
         text-align: left;
         border-color: transparent;
         background: transparent;
         color: {COLORS['muted']};
     }}
-    QPushButton#navButton:hover {{ background: {COLORS['surface']}; color: {COLORS['text']}; }}
+    QPushButton#navButton:hover {{ background: #1b1f25; color: {COLORS['text']}; }}
     QPushButton#navButton:checked {{
         color: {COLORS['text']};
-        background: {COLORS['teal_dark']};
-        border-color: #296f62;
+        background: {COLORS['blue_dark']};
+        border-color: #314a76;
     }}
     QListWidget {{
         background: transparent;
@@ -114,14 +124,14 @@ def application_stylesheet() -> str:
     QListWidget::item {{
         min-height: 54px;
         padding: 5px;
-        border-radius: 5px;
+        border-radius: 3px;
         color: {COLORS['muted']};
     }}
     QListWidget::item:hover {{ background: {COLORS['surface']}; }}
     QListWidget::item:selected {{
         color: {COLORS['text']};
         background: {COLORS['surface_2']};
-        border-left: 3px solid {COLORS['teal']};
+        border-left: 2px solid {COLORS['blue']};
     }}
     QProgressBar {{
         height: 8px;
@@ -131,7 +141,7 @@ def application_stylesheet() -> str:
         text-align: center;
         color: transparent;
     }}
-    QProgressBar::chunk {{ background: {COLORS['teal']}; border-radius: 4px; }}
+    QProgressBar::chunk {{ background: {COLORS['blue']}; border-radius: 4px; }}
     QScrollArea {{ border: 0; background: transparent; }}
     QScrollArea > QWidget > QWidget {{ background: transparent; }}
     QToolTip {{
@@ -145,17 +155,26 @@ def application_stylesheet() -> str:
         background: {COLORS['sidebar']};
         border-top: 1px solid {COLORS['border']};
     }}
+    QFrame#toast_ok, QFrame#toast_warning, QFrame#toast_busy, QFrame#toast_error {{
+        background: #242a31;
+        border: 1px solid #3b444f;
+        border-radius: 4px;
+    }}
+    QFrame#toast_ok {{ border-left: 3px solid {COLORS['success']}; }}
+    QFrame#toast_warning {{ border-left: 3px solid {COLORS['amber']}; }}
+    QFrame#toast_busy {{ border-left: 3px solid {COLORS['blue']}; }}
+    QFrame#toast_error {{ border-left: 3px solid {COLORS['coral']}; }}
     QDialog {{ background: {COLORS['canvas']}; }}
     QLineEdit, QSpinBox, QComboBox {{
         min-height: 32px;
         padding: 2px 8px;
         background: {COLORS['surface']};
         border: 1px solid {COLORS['border']};
-        border-radius: 5px;
-        selection-background-color: {COLORS['teal_dark']};
+        border-radius: 4px;
+        selection-background-color: {COLORS['blue_dark']};
     }}
     QMenu {{ background: {COLORS['surface']}; border: 1px solid {COLORS['border']}; }}
     QMenu::item {{ padding: 7px 24px 7px 12px; }}
-    QMenu::item:selected {{ background: {COLORS['teal_dark']}; }}
+    QMenu::item:selected {{ background: {COLORS['blue_dark']}; }}
     QSplitter::handle {{ background: {COLORS['border']}; width: 1px; }}
     """
