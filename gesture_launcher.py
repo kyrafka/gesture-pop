@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import os
+import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -92,9 +95,12 @@ def main() -> None:
             if state.triggered_label is not None:
                 active_label = state.triggered_label
                 active_until = now + config.overlay_seconds
+                image_path = gesture_map.get(active_label)
+                opened = bool(image_path and open_image_file(image_path))
                 print(
                     f"Disparo: {active_label} "
-                    f"({state.stable_confidence:.0%}, {state.stable_votes} votos)"
+                    f"({state.stable_confidence:.0%}, {state.stable_votes} votos) | "
+                    f"archivo={'abierto' if opened else 'no disponible'}"
                 )
 
             if active_label and now <= active_until and active_label in images:
@@ -125,6 +131,33 @@ def load_images(gesture_map: dict[str, Path]) -> dict[str, np.ndarray]:
         else:
             print(f"Aviso: no pude abrir la imagen de {label}: {path.name}")
     return images
+
+
+def open_image_file(path: Path) -> bool:
+    image_path = path.resolve()
+    if not image_path.is_file():
+        print(f"Aviso: no existe la imagen que se intento abrir: {image_path}")
+        return False
+    try:
+        if sys.platform == "win32":
+            startfile = getattr(os, "startfile")
+            startfile(str(image_path))
+        elif sys.platform == "darwin":
+            subprocess.Popen(
+                ["open", str(image_path)],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        else:
+            subprocess.Popen(
+                ["xdg-open", str(image_path)],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+    except (AttributeError, OSError) as exc:
+        print(f"Aviso: no pude abrir {image_path.name} con el visor del sistema: {exc}")
+        return False
+    return True
 
 
 def draw_launcher_ui(

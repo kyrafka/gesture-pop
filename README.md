@@ -18,6 +18,7 @@ Haz doble clic en `iniciar_estudio.bat` para abrir Gesture Studio. Desde una sol
 - Ejecutar una captura guiada automatica por zonas de la camara.
 - Administrar muestras individuales, incluidas las antiguas que solo tienen vector.
 - Entrenar el modelo y abrir el reconocimiento.
+- Abrir la imagen asociada en el visor predeterminado cuando el gesto se confirma.
 
 La columna izquierda contiene el menu de imagenes. El centro muestra la camara y los vectores. La columna derecha confirma el gesto activo, su imagen, contador y ultima captura.
 
