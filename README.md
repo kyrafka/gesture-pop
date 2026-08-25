@@ -6,7 +6,7 @@ Los datos personales de entrenamiento no se publican: `.gitignore` excluye captu
 
 ## Interfaz visual Qt
 
-Haz doble clic en `iniciar_estudio.bat` para abrir Gesture Pop Studio. La interfaz usa PySide6/Qt, iconos QtAwesome y transiciones breves; organiza el flujo en cuatro vistas:
+Haz doble clic en `NO_TOCAR/ABRIR_GESTURE_POP.bat` para abrir Gesture Pop Studio. La interfaz usa PySide6/Qt, iconos QtAwesome y transiciones breves; organiza el flujo en cuatro vistas:
 
 - `Captura`: camara, landmarks, estabilidad, telemetria y captura guiada.
 - `Muestras`: galeria de fotos, referencias y vectores antiguos sin foto.
@@ -31,7 +31,7 @@ Desde una sola ventana puedes:
 
 La columna izquierda contiene la navegacion y el menu de gestos. En `Captura`, el centro muestra la camara y los vectores; la columna derecha confirma el gesto activo, su progreso y la posicion/angulos detectados.
 
-La interfaz Tkinter anterior permanece en `gesture_studio.py` como respaldo temporal. El lanzador principal y VS Code abren `gesture_studio_qt.py`.
+El lanzador principal y VS Code abren `gesture_studio_qt.py`.
 
 ### Captura guiada
 
@@ -80,8 +80,8 @@ data/gesture_samples.csv  vectores usados para entrenar
 
 Tambien puedes hacer doble clic en:
 
-- `iniciar_estudio.bat` o `iniciar_entrenamiento.bat`
-- `iniciar_lanzador.bat`
+- `NO_TOCAR/ABRIR_GESTURE_POP.bat`
+- `NO_TOCAR/ABRIR_RECONOCIMIENTO.bat`
 
 ## Instalacion
 

@@ -1,8 +1,0 @@
-@echo off
-cd /d "%~dp0"
-if exist ".venv\Scripts\python.exe" (
-  ".venv\Scripts\python.exe" gesture_launcher.py
-) else (
-  python gesture_launcher.py
-)
-if errorlevel 1 pause

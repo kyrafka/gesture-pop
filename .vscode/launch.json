@@ -10,14 +10,6 @@
       "justMyCode": true
     },
     {
-      "name": "Gesture Studio clasico (Tkinter)",
-      "type": "debugpy",
-      "request": "launch",
-      "program": "${workspaceFolder}/gesture_studio.py",
-      "console": "integratedTerminal",
-      "justMyCode": true
-    },
-    {
       "name": "Entrenar gestos",
       "type": "debugpy",
       "request": "launch",
