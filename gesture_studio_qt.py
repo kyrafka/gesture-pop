@@ -24,6 +24,7 @@ from PySide6.QtGui import QAction, QCloseEvent, QIcon, QImage, QKeySequence, QPi
 from PySide6.QtWidgets import (
     QApplication,
     QButtonGroup,
+    QComboBox,
     QDialog,
     QFileDialog,
     QFrame,
@@ -89,12 +90,10 @@ class CameraWorker(QObject):
         try:
             self.status_changed.emit("Preparando MediaPipe...", "busy")
             extractor = LandmarkFeatureExtractor()
-            capture = cv2.VideoCapture(self.camera_index, cv2.CAP_DSHOW if os.name == "nt" else cv2.CAP_ANY)
-            capture.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
-            capture.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
+            capture = self._open_capture()
             if not capture.isOpened():
                 self.status_changed.emit(
-                    "No pude abrir la camara. Cierra Teams u otra aplicacion que la este usando.",
+                    f"No pude abrir Cam {self.camera_index}. Prueba reiniciar o cambia a otra Cam.",
                     "error",
                 )
                 return
@@ -122,6 +121,20 @@ class CameraWorker(QObject):
             if extractor is not None:
                 extractor.close()
             self.finished.emit()
+
+    def _open_capture(self) -> cv2.VideoCapture:
+        backends = [cv2.CAP_ANY]
+        if os.name == "nt":
+            backends = [cv2.CAP_DSHOW, cv2.CAP_MSMF, cv2.CAP_ANY]
+
+        for backend in backends:
+            capture = cv2.VideoCapture(self.camera_index, backend)
+            capture.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
+            capture.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
+            if capture.isOpened():
+                return capture
+            capture.release()
+        return cv2.VideoCapture()
 
 
 class ReferenceDialog(QDialog):
@@ -198,6 +211,7 @@ class GestureStudioQt(QMainWindow):
     def __init__(self, start_camera: bool = True) -> None:
         super().__init__()
         self.config = load_config()
+        self.camera_index = self.config.camera_index
         self.gesture_map = load_gesture_map()
         self.labels = list(self.gesture_map)
         self.selected_label = self.labels[0] if self.labels else None
@@ -367,6 +381,14 @@ class GestureStudioQt(QMainWindow):
         self.model_badge = QLabel()
         self.model_badge.setObjectName("warning")
         layout.addWidget(self.model_badge)
+        self.camera_selector = QComboBox()
+        self.camera_selector.setToolTip("Elegir camara")
+        for index in range(4):
+            self.camera_selector.addItem(f"Cam {index}", index)
+        selected_index = max(0, self.camera_selector.findData(self.camera_index))
+        self.camera_selector.setCurrentIndex(selected_index)
+        self.camera_selector.currentIndexChanged.connect(self.change_camera)
+        layout.addWidget(self.camera_selector)
         camera_button = QPushButton()
         apply_button_icon(camera_button, "fa6s.rotate")
         camera_button.setToolTip("Reiniciar camara")
@@ -734,7 +756,7 @@ class GestureStudioQt(QMainWindow):
             return
         self.camera_thread = QThread(self)
         self.camera_worker = CameraWorker(
-            self.config.camera_index,
+            self.camera_index,
             self.config.capture_stability_frames,
             self.config.capture_stability_threshold,
         )
@@ -757,6 +779,11 @@ class GestureStudioQt(QMainWindow):
         self.stop_camera()
         self.video_label.setText("Reiniciando camara...")
         self.start_camera()
+
+    def change_camera(self) -> None:
+        self.camera_index = int(self.camera_selector.currentData())
+        self.video_label.setText(f"Abriendo Cam {self.camera_index}...")
+        self.restart_camera()
 
     def _camera_stopped(self) -> None:
         if self.camera_thread is not None:
