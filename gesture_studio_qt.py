@@ -67,6 +67,8 @@ from train_gestures import (
 
 
 ROOT = Path(__file__).parent
+CAMERA_FRAME_FAILURE_LIMIT = 12
+CAMERA_REOPEN_DELAY_SECONDS = 0.35
 
 
 class CameraWorker(QObject):
@@ -90,7 +92,7 @@ class CameraWorker(QObject):
         try:
             self.status_changed.emit("Preparando MediaPipe...", "busy")
             extractor = LandmarkFeatureExtractor()
-            capture = self._open_capture()
+            capture, backend_name = self._open_capture()
             if not capture.isOpened():
                 self.status_changed.emit(
                     f"No pude abrir Cam {self.camera_index}. Prueba reiniciar o cambia a otra Cam.",
@@ -99,12 +101,32 @@ class CameraWorker(QObject):
                 return
 
             tracker = FeatureStabilityTracker(self.stability_frames, self.stability_threshold)
-            self.status_changed.emit("Camara activa", "ok")
+            failed_frames = 0
+            self.status_changed.emit(f"Camara activa ({backend_name})", "ok")
             while self.running:
                 ok, frame = capture.read()
-                if not ok:
-                    self.status_changed.emit("La camara dejo de entregar video.", "error")
-                    break
+                if not ok or frame is None:
+                    failed_frames += 1
+                    if failed_frames < CAMERA_FRAME_FAILURE_LIMIT:
+                        self.status_changed.emit("Esperando video de la camara...", "busy")
+                        time.sleep(0.08)
+                        continue
+
+                    self.status_changed.emit("Reconectando camara...", "busy")
+                    capture.release()
+                    time.sleep(CAMERA_REOPEN_DELAY_SECONDS)
+                    capture, backend_name = self._open_capture()
+                    failed_frames = 0
+                    if not capture.isOpened():
+                        self.status_changed.emit(
+                            f"No pude recuperar Cam {self.camera_index}. Cambia de Cam o cierra apps de video.",
+                            "error",
+                        )
+                        break
+                    self.status_changed.emit(f"Camara recuperada ({backend_name})", "ok")
+                    continue
+
+                failed_frames = 0
                 frame = cv2.flip(frame, 1)
                 result = extractor.extract(frame)
                 vector = result.vector if result is not None and result.hands else None
@@ -122,19 +144,19 @@ class CameraWorker(QObject):
                 extractor.close()
             self.finished.emit()
 
-    def _open_capture(self) -> cv2.VideoCapture:
-        backends = [cv2.CAP_ANY]
+    def _open_capture(self) -> tuple[cv2.VideoCapture, str]:
+        backends = [(cv2.CAP_ANY, "AUTO")]
         if os.name == "nt":
-            backends = [cv2.CAP_DSHOW, cv2.CAP_MSMF, cv2.CAP_ANY]
+            backends = [(cv2.CAP_DSHOW, "DSHOW"), (cv2.CAP_MSMF, "MSMF"), (cv2.CAP_ANY, "AUTO")]
 
-        for backend in backends:
+        for backend, backend_name in backends:
             capture = cv2.VideoCapture(self.camera_index, backend)
             capture.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
             capture.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
             if capture.isOpened():
-                return capture
+                return capture, backend_name
             capture.release()
-        return cv2.VideoCapture()
+        return cv2.VideoCapture(), "NONE"
 
 
 class ReferenceDialog(QDialog):
