@@ -18,6 +18,7 @@ from PySide6.QtCore import (
     QSize,
     Qt,
     QThread,
+    QTimer,
     Signal,
 )
 from PySide6.QtGui import QAction, QCloseEvent, QIcon, QImage, QKeySequence, QPixmap, QShortcut
@@ -244,6 +245,7 @@ class GestureStudioQt(QMainWindow):
         self.current_movement = float("inf")
         self.camera_thread: QThread | None = None
         self.camera_worker: CameraWorker | None = None
+        self.camera_restarting = False
         self.guided_targets: list[CaptureTarget] = []
         self.guided_index = 0
         self.guided_last_capture = 0.0
@@ -787,7 +789,9 @@ class GestureStudioQt(QMainWindow):
         self.camera_worker.frame_ready.connect(self._on_frame)
         self.camera_worker.status_changed.connect(self._on_camera_status)
         self.camera_worker.finished.connect(self.camera_thread.quit)
-        self.camera_thread.finished.connect(self._camera_stopped)
+        self.camera_thread.finished.connect(
+            lambda thread=self.camera_thread, worker=self.camera_worker: self._camera_stopped(thread, worker)
+        )
         self.camera_thread.start()
 
     def stop_camera(self) -> None:
@@ -798,22 +802,31 @@ class GestureStudioQt(QMainWindow):
             self.camera_thread.wait(3500)
 
     def restart_camera(self) -> None:
+        if self.camera_restarting:
+            return
+        self.camera_restarting = True
+        self.camera_selector.setEnabled(False)
         self.stop_camera()
         self.video_label.setText("Reiniciando camara...")
-        self.start_camera()
+        QTimer.singleShot(180, self._finish_camera_restart)
 
     def change_camera(self) -> None:
         self.camera_index = int(self.camera_selector.currentData())
         self.video_label.setText(f"Abriendo Cam {self.camera_index}...")
         self.restart_camera()
 
-    def _camera_stopped(self) -> None:
-        if self.camera_thread is not None:
-            self.camera_thread.deleteLater()
-        if self.camera_worker is not None:
-            self.camera_worker.deleteLater()
-        self.camera_thread = None
-        self.camera_worker = None
+    def _finish_camera_restart(self) -> None:
+        self.start_camera()
+        self.camera_restarting = False
+        self.camera_selector.setEnabled(True)
+
+    def _camera_stopped(self, thread: QThread, worker: CameraWorker) -> None:
+        thread.deleteLater()
+        worker.deleteLater()
+        if self.camera_thread is thread:
+            self.camera_thread = None
+        if self.camera_worker is worker:
+            self.camera_worker = None
 
     def _on_camera_status(self, message: str, level: str) -> None:
         colors = {"ok": COLORS["success"], "busy": COLORS["amber"], "error": COLORS["coral"]}
