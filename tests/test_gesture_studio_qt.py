@@ -27,8 +27,8 @@ class GestureStudioQtTests(unittest.TestCase):
     def test_builds_all_workflow_pages_without_camera(self) -> None:
         window = GestureStudioQt(start_camera=False)
         try:
-            self.assertEqual(window.pages.count(), 4)
-            self.assertEqual(len(window.nav_buttons), 4)
+            self.assertEqual(window.pages.count(), 5)
+            self.assertEqual(len(window.nav_buttons), 5)
             self.assertEqual(set(window.labels), set(window.gesture_map))
         finally:
             window.close()

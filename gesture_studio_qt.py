@@ -47,6 +47,7 @@ from PySide6.QtWidgets import (
 
 from app_config import IMAGE_DIR, IMAGE_SUFFIXES, load_config, load_gesture_map, save_gesture_map
 from gesture_features import FeatureResult, LandmarkFeatureExtractor, draw_landmarks, summarize_vector
+from gesture_settings import expected_hands_for, load_gesture_settings, save_gesture_settings
 from gesture_launcher import MODEL_FILE
 from gesture_runtime import FeatureStabilityTracker
 from guided_capture import CaptureTarget, build_capture_targets
@@ -238,6 +239,7 @@ class GestureStudioQt(QMainWindow):
         self.camera_index = self.config.camera_index
         self.gesture_map = load_gesture_map()
         self.labels = list(self.gesture_map)
+        self.gesture_settings = load_gesture_settings(self.labels)
         self.selected_label = self.labels[0] if self.labels else None
         self.sample_counts: dict[str, int] = {}
         self.current_frame: np.ndarray | None = None
@@ -293,7 +295,14 @@ class GestureStudioQt(QMainWindow):
         self.dataset_page = self._build_dataset_page()
         self.training_page = self._build_training_page()
         self.recognition_page = self._build_recognition_page()
-        for page in (self.capture_page, self.dataset_page, self.training_page, self.recognition_page):
+        self.evidence_page = self._build_evidence_page()
+        for page in (
+            self.capture_page,
+            self.dataset_page,
+            self.training_page,
+            self.recognition_page,
+            self.evidence_page,
+        ):
             self.pages.addWidget(page)
         content_layout.addWidget(self.pages, 1)
         layout.addWidget(content, 1)
@@ -338,6 +347,7 @@ class GestureStudioQt(QMainWindow):
             ("Muestras", "fa6s.images"),
             ("Entrenamiento", "fa6s.chart-simple"),
             ("Reconocimiento", "fa6s.play"),
+            ("Evidencias", "fa6s.folder-open"),
         ]
         for index, (text, icon_name) in enumerate(nav_specs):
             button = QPushButton(text)
@@ -519,11 +529,17 @@ class GestureStudioQt(QMainWindow):
         self.selected_count.setObjectName("muted")
         self.target_progress = QProgressBar()
         self.target_progress.setRange(0, self.config.target_samples_per_gesture)
+        self.expected_hands_selector = QComboBox()
+        self.expected_hands_selector.setToolTip("Manos esperadas para este gesto")
+        self.expected_hands_selector.addItem("1 mano", 1)
+        self.expected_hands_selector.addItem("2 manos", 2)
+        self.expected_hands_selector.currentIndexChanged.connect(self.change_expected_hands)
         target_layout.addWidget(eyebrow)
         target_layout.addWidget(self.target_preview)
         target_layout.addWidget(self.selected_name)
         target_layout.addWidget(self.selected_count)
         target_layout.addWidget(self.target_progress)
+        target_layout.addWidget(self.expected_hands_selector)
         inspector_layout.addWidget(target)
 
         telemetry = QFrame()
@@ -544,6 +560,24 @@ class GestureStudioQt(QMainWindow):
         telemetry_layout.addWidget(self.pose_label)
         telemetry_layout.addWidget(self.vector_summary_label)
         inspector_layout.addWidget(telemetry)
+
+        quality = QFrame()
+        quality.setObjectName("panel")
+        quality_layout = QVBoxLayout(quality)
+        quality_title = QLabel("Calidad de captura")
+        quality_title.setObjectName("sectionTitle")
+        self.quality_score_label = QLabel("--")
+        self.quality_score_label.setObjectName("metric")
+        self.quality_status_label = QLabel("Esperando video")
+        self.quality_status_label.setObjectName("muted")
+        self.quality_status_label.setWordWrap(True)
+        self.quality_bar = QProgressBar()
+        self.quality_bar.setRange(0, 100)
+        quality_layout.addWidget(quality_title)
+        quality_layout.addWidget(self.quality_score_label)
+        quality_layout.addWidget(self.quality_bar)
+        quality_layout.addWidget(self.quality_status_label)
+        inspector_layout.addWidget(quality)
         inspector_layout.addStretch()
         layout.addWidget(inspector)
         return page
@@ -654,6 +688,41 @@ class GestureStudioQt(QMainWindow):
         layout.addWidget(action_panel, 1)
         return page
 
+    def _build_evidence_page(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(0, 0, 0, 0)
+        header = QHBoxLayout()
+        title_box = QVBoxLayout()
+        self.evidence_heading = QLabel("Evidencias de vectores")
+        self.evidence_heading.setObjectName("sectionTitle")
+        self.evidence_summary = QLabel()
+        self.evidence_summary.setObjectName("muted")
+        title_box.addWidget(self.evidence_heading)
+        title_box.addWidget(self.evidence_summary)
+        header.addLayout(title_box, 1)
+        open_folder = QPushButton("Abrir carpeta")
+        apply_button_icon(open_folder, "fa6s.folder-open")
+        open_folder.clicked.connect(self.open_evidence_folder)
+        refresh = QPushButton()
+        apply_button_icon(refresh, "fa6s.rotate")
+        refresh.setToolTip("Actualizar evidencias")
+        refresh.setFixedWidth(42)
+        refresh.clicked.connect(self.refresh_evidence)
+        header.addWidget(open_folder)
+        header.addWidget(refresh)
+        layout.addLayout(header)
+
+        self.evidence_scroll = QScrollArea()
+        self.evidence_scroll.setWidgetResizable(True)
+        self.evidence_body = QWidget()
+        self.evidence_grid = QGridLayout(self.evidence_body)
+        self.evidence_grid.setContentsMargins(0, 8, 4, 8)
+        self.evidence_grid.setSpacing(12)
+        self.evidence_scroll.setWidget(self.evidence_body)
+        layout.addWidget(self.evidence_scroll, 1)
+        return page
+
     def _build_menu(self) -> None:
         file_menu = self.menuBar().addMenu("Archivo")
         add_action = QAction("Agregar gesto", self)
@@ -758,6 +827,7 @@ class GestureStudioQt(QMainWindow):
             ("Muestras", "Fotos y vectores del dataset"),
             ("Entrenamiento", "Cobertura por clase y modelo"),
             ("Reconocimiento", "Gestos y acciones"),
+            ("Evidencias", "Capturas libres con landmarks"),
         ]
         self.page_title.setText(titles[index][0])
         self.page_subtitle.setText(titles[index][1])
@@ -767,6 +837,8 @@ class GestureStudioQt(QMainWindow):
             self.refresh_training()
         elif index == 3:
             self.refresh_recognition()
+        elif index == 4:
+            self.refresh_evidence()
         self.pages.setCurrentIndex(index)
 
     def _configure_interactions(self) -> None:
@@ -871,6 +943,8 @@ class GestureStudioQt(QMainWindow):
     def _update_telemetry(self, result: FeatureResult | None, stable: bool, movement: float) -> None:
         hands = len(result.hands) if result else 0
         faces = len(result.faces) if result else 0
+        expected_hands = expected_hands_for(self.gesture_settings, self.selected_label)
+        quality_score, quality_notes = self._capture_quality(result, stable, movement, expected_hands)
         self.hand_count_label.setText(f"Manos  {hands}")
         self.face_label.setText(f"Cara  {'detectada' if faces else 'no detectada'}")
         occlusion_hold = bool(result and "occlusion_hold=yes" in result.debug)
@@ -882,7 +956,10 @@ class GestureStudioQt(QMainWindow):
             0, self.config.capture_stability_frames - 2
         ) if result and result.hands and np.isfinite(movement) else 0
         self.stability_progress.setValue(stability_count)
-        self.capture_button.setEnabled(bool(self.selected_label and result and result.hands and stable))
+        self.capture_button.setEnabled(bool(self.selected_label and stable and hands >= expected_hands))
+        self.quality_bar.setValue(quality_score)
+        self.quality_score_label.setText(f"{quality_score}%")
+        self.quality_status_label.setText("\n".join(quality_notes))
 
         if result and result.hand_poses:
             pose = result.hand_poses[0]
@@ -902,6 +979,47 @@ class GestureStudioQt(QMainWindow):
             self.pose_label.setText("Posicion  --\nAngulo  --\nInclinacion  --")
             self.guidance_label.setText("Muestra una mano completa dentro del cuadro.")
         self.vector_summary_label.setText("\n".join(summarize_vector(result)))
+
+    def _capture_quality(
+        self,
+        result: FeatureResult | None,
+        stable: bool,
+        movement: float,
+        expected_hands: int,
+    ) -> tuple[int, list[str]]:
+        score = 0
+        notes: list[str] = []
+        hands = len(result.hands) if result else 0
+        if hands >= expected_hands:
+            score += 35
+            notes.append(f"Manos OK: {hands}/{expected_hands}")
+        else:
+            notes.append(f"Faltan manos: {hands}/{expected_hands}")
+
+        if stable:
+            score += 30
+            notes.append("Estabilidad OK")
+        elif np.isfinite(movement):
+            notes.append(f"Movimiento alto: {movement:.2f}")
+        else:
+            notes.append("Buscando estabilidad")
+
+        pose = result.hand_poses[0] if result and result.hand_poses else None
+        if pose and 0.08 <= pose.width <= 0.75 and 0.08 <= pose.height <= 0.85:
+            score += 20
+            notes.append("Tamano en cuadro OK")
+        elif pose:
+            notes.append("Ajusta distancia a camara")
+        else:
+            notes.append("Sin pose de mano")
+
+        if result and result.faces:
+            score += 10
+            notes.append("Cara detectada")
+        if result and "occlusion_hold=yes" in result.debug:
+            score = max(0, score - 15)
+            notes.append("Oclusion breve")
+        return min(score, 100), notes[:4]
 
     def _current_guided_target(self) -> CaptureTarget | None:
         if 0 <= self.guided_index < len(self.guided_targets):
@@ -1027,6 +1145,8 @@ class GestureStudioQt(QMainWindow):
         if not cv2.imwrite(str(path), self.current_evidence_frame):
             self._notify("No pude guardar la evidencia.", "warning")
             return
+        if self.pages.currentIndex() == 4:
+            self.refresh_evidence()
         self._notify(f"Evidencia guardada: {path.name}", "ok")
 
     def undo_sample(self) -> None:
@@ -1150,6 +1270,7 @@ class GestureStudioQt(QMainWindow):
         old_label = self.selected_label
         self.gesture_map = load_gesture_map()
         self.labels = list(self.gesture_map)
+        self.gesture_settings = load_gesture_settings(self.labels)
         self.sample_counts = load_sample_counts(self.labels)
         if old_label in self.gesture_map:
             self.selected_label = old_label
@@ -1190,6 +1311,8 @@ class GestureStudioQt(QMainWindow):
         self._refresh_selected_panel()
         if self.pages.currentIndex() == 1:
             self.refresh_dataset()
+        elif self.pages.currentIndex() == 4:
+            self.refresh_evidence()
 
     def _refresh_selected_panel(self) -> None:
         label = self.selected_label
@@ -1201,11 +1324,24 @@ class GestureStudioQt(QMainWindow):
         self.selected_name.setText(label)
         self.selected_count.setText(f"{count} de {self.config.target_samples_per_gesture} muestras recomendadas")
         self.target_progress.setValue(min(count, self.config.target_samples_per_gesture))
+        self.expected_hands_selector.blockSignals(True)
+        selected_index = max(0, self.expected_hands_selector.findData(expected_hands_for(self.gesture_settings, label)))
+        self.expected_hands_selector.setCurrentIndex(selected_index)
+        self.expected_hands_selector.blockSignals(False)
         pixmap = QPixmap(str(self.gesture_map[label]))
         self.target_preview.setPixmap(pixmap.scaled(
             275, 165, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation
         ))
         self.fade_controller.pulse(self.target_preview)
+
+    def change_expected_hands(self) -> None:
+        if not self.selected_label:
+            return
+        self.gesture_settings.setdefault(self.selected_label, {})["expected_hands"] = int(
+            self.expected_hands_selector.currentData()
+        )
+        save_gesture_settings(self.gesture_settings)
+        self._notify("Ajuste de manos guardado", "ok")
 
     def refresh_dataset(self) -> None:
         clear_layout(self.dataset_grid)
@@ -1284,6 +1420,47 @@ class GestureStudioQt(QMainWindow):
         removed, _path, _sample_id = remove_sample_record(record)
         self.refresh_all()
         self._notify("Muestra eliminada" if removed else "La muestra ya no existe", "ok" if removed else "warning")
+
+    def refresh_evidence(self) -> None:
+        clear_layout(self.evidence_grid)
+        files = self._evidence_files()
+        self.evidence_summary.setText(f"{len(files)} capturas guardadas en data/evidencias_vectores")
+        if not files:
+            empty = QLabel("Todavia no hay evidencias. Usa Captura > Evidencia 5s para guardar una.")
+            empty.setObjectName("muted")
+            empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            self.evidence_grid.addWidget(empty, 0, 0, 1, 3)
+            return
+        for index, path in enumerate(files):
+            card = self._sample_card(path.stem, "Foto libre con vectores", path, lambda _=False, item=path: self.delete_evidence(item))
+            self.evidence_grid.addWidget(card, index // 3, index % 3)
+        self.evidence_grid.setRowStretch((len(files) + 2) // 3, 1)
+
+    @staticmethod
+    def _evidence_files() -> list[Path]:
+        if not EVIDENCE_DIR.exists():
+            return []
+        return sorted(
+            [path for path in EVIDENCE_DIR.iterdir() if path.suffix.lower() in IMAGE_SUFFIXES],
+            key=lambda path: path.stat().st_mtime,
+            reverse=True,
+        )
+
+    def open_evidence_folder(self) -> None:
+        EVIDENCE_DIR.mkdir(parents=True, exist_ok=True)
+        os.startfile(EVIDENCE_DIR)
+
+    def delete_evidence(self, path: Path) -> None:
+        answer = QMessageBox.question(self, "Eliminar evidencia", f"Eliminar {path.name}?")
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            path.unlink()
+        except OSError as exc:
+            self._notify(f"No pude eliminar: {exc}", "warning")
+            return
+        self.refresh_evidence()
+        self._notify("Evidencia eliminada", "ok")
 
     def refresh_training(self) -> None:
         clear_layout(self.training_layout)

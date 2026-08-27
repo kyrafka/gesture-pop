@@ -11,7 +11,9 @@ flutter-sdk/
 # Datos locales de entrenamiento y capturas de camara.
 data/*.csv
 data/captures/
+data/evidencias_vectores/
 data/references/
+gesture_settings.json
 
 # Modelos descargados o entrenados se regeneran localmente.
 models/*.task
