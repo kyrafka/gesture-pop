@@ -68,6 +68,7 @@ from train_gestures import (
 
 
 ROOT = Path(__file__).parent
+EVIDENCE_DIR = ROOT / "data" / "evidencias_vectores"
 CAMERA_FRAME_FAILURE_LIMIT = 12
 CAMERA_REOPEN_DELAY_SECONDS = 0.35
 
@@ -240,9 +241,13 @@ class GestureStudioQt(QMainWindow):
         self.selected_label = self.labels[0] if self.labels else None
         self.sample_counts: dict[str, int] = {}
         self.current_frame: np.ndarray | None = None
+        self.current_evidence_frame: np.ndarray | None = None
         self.current_result: FeatureResult | None = None
         self.current_stable = False
         self.current_movement = float("inf")
+        self.evidence_countdown_remaining = 0
+        self.evidence_timer = QTimer(self)
+        self.evidence_timer.timeout.connect(self._tick_evidence_countdown)
         self.camera_thread: QThread | None = None
         self.camera_worker: CameraWorker | None = None
         self.camera_restarting = False
@@ -472,6 +477,10 @@ class GestureStudioQt(QMainWindow):
         self.guided_button = QPushButton("Captura guiada")
         apply_button_icon(self.guided_button, "fa6s.route")
         self.guided_button.clicked.connect(self.toggle_guided_capture)
+        self.evidence_button = QPushButton("Evidencia 5s")
+        apply_button_icon(self.evidence_button, "fa6s.clock")
+        self.evidence_button.setToolTip("Tomar foto con vectores sin entrenar")
+        self.evidence_button.clicked.connect(self.start_evidence_countdown)
         undo = QPushButton()
         apply_button_icon(undo, "fa6s.rotate-left")
         undo.setToolTip("Deshacer la ultima muestra")
@@ -479,6 +488,7 @@ class GestureStudioQt(QMainWindow):
         undo.clicked.connect(self.undo_sample)
         controls.addWidget(self.capture_button)
         controls.addWidget(self.guided_button)
+        controls.addWidget(self.evidence_button)
         controls.addWidget(undo)
         controls.addStretch()
         reference = QPushButton("Subir referencia")
@@ -848,6 +858,7 @@ class GestureStudioQt(QMainWindow):
         if target is not None:
             self._draw_target(shown, target, target_matches)
             self._update_guided_capture(stable, target_matches)
+        self.current_evidence_frame = shown.copy()
 
         pixmap = bgr_to_pixmap(shown)
         self.video_label.setPixmap(pixmap.scaled(
@@ -972,6 +983,43 @@ class GestureStudioQt(QMainWindow):
         if not silent:
             self._notify(f"Muestra guardada para {self.selected_label}", "ok")
         return True
+
+    def start_evidence_countdown(self) -> None:
+        if self.current_evidence_frame is None:
+            self._notify("Necesito video activo para tomar evidencia.", "warning")
+            return
+        if self.evidence_timer.isActive():
+            return
+        self.evidence_countdown_remaining = 5
+        self.evidence_button.setEnabled(False)
+        self.evidence_button.setText("Evidencia 5")
+        self.guidance_label.setText("Prepara el gesto: foto de evidencia en 5 segundos.")
+        self.evidence_timer.start(1000)
+
+    def _tick_evidence_countdown(self) -> None:
+        self.evidence_countdown_remaining -= 1
+        if self.evidence_countdown_remaining > 0:
+            self.evidence_button.setText(f"Evidencia {self.evidence_countdown_remaining}")
+            self.guidance_label.setText(
+                f"Manten el gesto visible: foto de evidencia en {self.evidence_countdown_remaining}."
+            )
+            return
+        self.evidence_timer.stop()
+        self.evidence_button.setEnabled(True)
+        self.evidence_button.setText("Evidencia 5s")
+        self.save_evidence_frame()
+
+    def save_evidence_frame(self) -> None:
+        if self.current_evidence_frame is None:
+            self._notify("No hay frame para guardar.", "warning")
+            return
+        EVIDENCE_DIR.mkdir(parents=True, exist_ok=True)
+        timestamp = time.strftime("%Y%m%d-%H%M%S")
+        path = EVIDENCE_DIR / f"vectores-{timestamp}.png"
+        if not cv2.imwrite(str(path), self.current_evidence_frame):
+            self._notify("No pude guardar la evidencia.", "warning")
+            return
+        self._notify(f"Evidencia guardada: {path.name}", "ok")
 
     def undo_sample(self) -> None:
         if not self.selected_label:
