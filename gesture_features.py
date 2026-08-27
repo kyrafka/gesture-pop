@@ -24,6 +24,7 @@ ROOT = Path(__file__).parent
 MODEL_DIR = ROOT / "models"
 HAND_MODEL_FILE = MODEL_DIR / "hand_landmarker.task"
 FACE_MODEL_FILE = MODEL_DIR / "face_landmarker.task"
+HAND_OCCLUSION_GRACE_SECONDS = 0.35
 
 
 @dataclass
@@ -50,6 +51,8 @@ class HandPose:
 
 class LandmarkFeatureExtractor:
     def __init__(self) -> None:
+        self._last_hands: list[list[object]] = []
+        self._last_hands_seen_at = 0.0
         if hasattr(mp, "solutions"):
             self.backend = _SolutionsBackend()
             return
@@ -65,6 +68,7 @@ class LandmarkFeatureExtractor:
     def extract(self, frame_bgr: np.ndarray) -> FeatureResult | None:
         hands, faces = self.backend.detect(frame_bgr)
         hands = sorted(hands, key=lambda hand: hand[0].x)
+        hands, using_cached_hand = self._stabilize_occluded_hands(hands)
 
         parts: list[float] = []
         debug_parts: list[str] = []
@@ -80,6 +84,9 @@ class LandmarkFeatureExtractor:
             else:
                 parts.extend([0.0] * (HAND_POINTS * 3 + 15))
                 debug_parts.append(f"hand{hand_index + 1}=no")
+
+        if using_cached_hand:
+            debug_parts.append("occlusion_hold=yes")
 
         if faces:
             face = faces[0]
@@ -101,6 +108,37 @@ class LandmarkFeatureExtractor:
             faces=faces,
             hand_poses=[analyze_hand_pose(hand, index + 1) for index, hand in enumerate(hands)],
         )
+
+    def _stabilize_occluded_hands(self, hands: list[list[object]]) -> tuple[list[list[object]], bool]:
+        now = time.monotonic()
+        if len(hands) >= 2:
+            self._last_hands = hands[:2]
+            self._last_hands_seen_at = now
+            return hands[:2], False
+
+        if not hands:
+            self._last_hands = []
+            return hands, False
+
+        if len(self._last_hands) < 2 or now - self._last_hands_seen_at > HAND_OCCLUSION_GRACE_SECONDS:
+            self._last_hands = hands
+            self._last_hands_seen_at = now
+            return hands, False
+
+        current_center = _hand_center(hands[0])
+        previous_centers = [_hand_center(hand) for hand in self._last_hands]
+        matched_index = int(np.argmin([
+            math.hypot(current_center[0] - center[0], current_center[1] - center[1])
+            for center in previous_centers
+        ]))
+        missing_index = 1 - matched_index
+        stabilized = [None, None]
+        stabilized[matched_index] = hands[0]
+        stabilized[missing_index] = self._last_hands[missing_index]
+        merged = [hand for hand in stabilized if hand is not None]
+        merged = sorted(merged, key=lambda hand: hand[0].x)
+        self._last_hands = merged
+        return merged, True
 
 
 def draw_landmarks(frame_bgr: np.ndarray, result: FeatureResult | None) -> None:
@@ -221,6 +259,12 @@ def analyze_hand_pose(landmarks, index: int = 1) -> HandPose:
         zone=_screen_zone(center_x, center_y),
         bbox=(x1, y1, x2, y2),
     )
+
+
+def _hand_center(landmarks) -> tuple[float, float]:
+    points = np.array([(point.x, point.y) for point in landmarks], dtype=np.float32)
+    center = points.mean(axis=0)
+    return float(center[0]), float(center[1])
 
 
 class _SolutionsBackend:

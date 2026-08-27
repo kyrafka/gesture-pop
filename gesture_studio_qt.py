@@ -873,7 +873,11 @@ class GestureStudioQt(QMainWindow):
         faces = len(result.faces) if result else 0
         self.hand_count_label.setText(f"Manos  {hands}")
         self.face_label.setText(f"Cara  {'detectada' if faces else 'no detectada'}")
-        self.vector_status.setText("Vector estable" if stable else "Buscando estabilidad")
+        occlusion_hold = bool(result and "occlusion_hold=yes" in result.debug)
+        if occlusion_hold:
+            self.vector_status.setText("Oclusion breve")
+        else:
+            self.vector_status.setText("Vector estable" if stable else "Buscando estabilidad")
         stability_count = self.config.capture_stability_frames if stable else max(
             0, self.config.capture_stability_frames - 2
         ) if result and result.hands and np.isfinite(movement) else 0
@@ -888,7 +892,11 @@ class GestureStudioQt(QMainWindow):
                 f"Inclinacion  {pose.tilt_deg:+.0f} deg"
             )
             self.guidance_label.setText(
-                "Listo para capturar." if stable else "Manten el gesto quieto hasta completar la barra."
+                "Manos juntas detectadas: sosteniendo vector breve."
+                if occlusion_hold
+                else "Listo para capturar."
+                if stable
+                else "Manten el gesto quieto hasta completar la barra."
             )
         else:
             self.pose_label.setText("Posicion  --\nAngulo  --\nInclinacion  --")
