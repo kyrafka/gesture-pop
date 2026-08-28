@@ -24,6 +24,7 @@ Desde una sola ventana puedes:
 - Seleccionar visualmente que imagen recibira las muestras.
 - Ver la camara, mano, cara y landmarks en vivo.
 - Ver una caja por mano con posicion X/Y, zona, giro e inclinacion.
+- Activar RTMPose como respaldo cuando MediaPipe pierde una mano.
 - Capturar y deshacer muestras.
 - Ejecutar una captura guiada automatica por zonas de la camara.
 - Administrar muestras individuales, incluidas las antiguas que solo tienen vector.
@@ -53,7 +54,7 @@ Cada mano detectada usa un color distinto y muestra:
 
 El seguimiento equilibrado conserva las identidades `M1` y `M2` usando posicion, velocidad, forma y lateralidad de MediaPipe. Si las manos se cruzan, la interfaz muestra `Cruce protegido`; si una desaparece unas decimas de segundo, conserva su ultimo vector mientras intenta recuperarla. Un salto extremo reinicia la ventana de estabilidad para evitar guardar una muestra corrupta.
 
-Este perfil usa el Hand Landmarker completo que ya esta en `models/`, mas un rastreador temporal ligero. Da mas continuidad que ordenar las manos en cada frame, sin el costo de ejecutar OpenPose/MMPose u otra red neuronal pesada encima de MediaPipe.
+La opcion `Asistencia RTMPose` agrega un segundo detector de 21 puntos. MediaPipe sigue ejecutandose en cada frame; RTMDet + RTMPose-M trabajan en otro proceso a intervalos y solo completan manos faltantes. Durante un cruce se consulta con mayor frecuencia. La etiqueta sobre cada caja indica `MP` o `RTM`, y el inspector muestra estado, manos y latencia. Si el proceso pesado falla o no esta instalado, el video continua con MediaPipe.
 
 La caja y los angulos son telemetria visual. No cambian el vector de entrenamiento, por lo que las muestras antiguas siguen siendo compatibles. `T` es una estimacion basada en la profundidad relativa de MediaPipe, no una medicion fisica calibrada.
 
@@ -97,6 +98,8 @@ py -3.12 -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install -r requirements.txt
 ```
+
+Para instalar la asistencia pesada, ejecuta `NO_TOCAR/INSTALAR_RTMPOSE.bat`. Instala `rtmlib`/ONNX Runtime y descarga los pesos oficiales RTMDet-nano + RTMPose-M en `models/heavy/`. Los pesos son locales y no se publican en Git.
 
 Los modelos de MediaPipe deben estar exactamente aqui:
 

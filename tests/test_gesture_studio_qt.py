@@ -30,6 +30,8 @@ class GestureStudioQtTests(unittest.TestCase):
             self.assertEqual(window.pages.count(), 5)
             self.assertEqual(len(window.nav_buttons), 5)
             self.assertEqual(set(window.labels), set(window.gesture_map))
+            self.assertTrue(window.heavy_toggle.isChecked())
+            self.assertIn("RTMPose", window.heavy_status_label.text())
         finally:
             window.close()
 

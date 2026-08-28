@@ -9,8 +9,10 @@ from gesture_features import (
     FeatureResult,
     HandDetection,
     HandIdentityTracker,
+    LandmarkFeatureExtractor,
     analyze_hand_pose,
     draw_landmarks,
+    merge_hand_detections,
 )
 
 
@@ -127,6 +129,74 @@ class HandIdentityTrackerTests(unittest.TestCase):
         self.assertEqual(held.mode, "occlusion_hold")
         self.assertEqual(len(expired_hands), 1)
         self.assertEqual(expired.cached_hands, 0)
+
+    def test_rtpose_source_is_reported_and_keeps_previous_depth(self) -> None:
+        tracker = HandIdentityTracker()
+        original = make_tracking_hand(0.42)
+        tracker.update([HandDetection(original, "Left", 0.9)], now=2.0)
+        rtpose = [SimpleNamespace(x=point.x + 0.01, y=point.y, z=0.0) for point in original]
+        scores = tuple(0.1 if index == 10 else 0.8 for index in range(21))
+
+        hands, tracking = tracker.update(
+            [
+                HandDetection(
+                    rtpose,
+                    source="rtmpose",
+                    confidence=0.8,
+                    landmark_scores=scores,
+                )
+            ],
+            now=2.05,
+        )
+
+        self.assertEqual(tracking.sources, ("rtmpose",))
+        self.assertEqual(tracking.assisted_hands, 1)
+        self.assertAlmostEqual(hands[0][10].x, original[10].x, places=5)
+        self.assertAlmostEqual(hands[0][10].z, original[10].z, places=5)
+
+
+class HandDetectionMergeTests(unittest.TestCase):
+    def test_adds_only_the_heavy_hand_missing_from_mediapipe(self) -> None:
+        primary = [HandDetection(make_tracking_hand(0.30), "Left", 0.9)]
+        supplemental = [
+            HandDetection(make_tracking_hand(0.31), source="rtmpose", confidence=0.95),
+            HandDetection(make_tracking_hand(0.72), source="rtmpose", confidence=0.88),
+        ]
+
+        merged = merge_hand_detections(primary, supplemental)
+
+        self.assertEqual(len(merged), 2)
+        self.assertIs(merged[0], primary[0])
+        self.assertIs(merged[1], supplemental[1])
+
+    def test_does_not_duplicate_a_single_matching_heavy_hand(self) -> None:
+        primary = [HandDetection(make_tracking_hand(0.45), "Left", 0.9)]
+        supplemental = [
+            HandDetection(make_tracking_hand(0.47), source="rtmpose", confidence=0.92)
+        ]
+
+        merged = merge_hand_detections(primary, supplemental)
+
+        self.assertEqual(merged, primary)
+
+    def test_expected_hand_count_prevents_a_phantom_second_hand(self) -> None:
+        primary = [HandDetection(make_tracking_hand(0.30), "Left", 0.9)]
+        supplemental = [
+            HandDetection(make_tracking_hand(0.31), source="rtmpose", confidence=0.95),
+            HandDetection(make_tracking_hand(0.72), source="rtmpose", confidence=0.88),
+        ]
+        extractor = LandmarkFeatureExtractor.__new__(LandmarkFeatureExtractor)
+        extractor.hand_tracker = HandIdentityTracker()
+        extractor.backend = SimpleNamespace(detect=lambda _frame: (primary, []))
+
+        one_hand = extractor.extract(
+            np.zeros((100, 100, 3), dtype=np.uint8),
+            supplemental,
+            expected_hands=1,
+        )
+
+        self.assertIsNotNone(one_hand)
+        self.assertEqual(len(one_hand.hands), 1)
 
 
 if __name__ == "__main__":

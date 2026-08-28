@@ -18,6 +18,8 @@ gesture_settings.json
 # Modelos descargados o entrenados se regeneran localmente.
 models/*.task
 models/*.joblib
+models/heavy/*
+!models/heavy/.gitkeep
 
 *.log
 .DS_Store

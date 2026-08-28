@@ -20,6 +20,10 @@ class AppConfig:
     capture_min_interval_seconds: float = 0.35
     capture_stability_frames: int = 6
     capture_stability_threshold: float = 0.12
+    heavy_hand_assist: bool = True
+    heavy_hand_interval_seconds: float = 0.32
+    heavy_hand_idle_interval_seconds: float = 1.5
+    heavy_hand_stale_seconds: float = 0.55
     confidence_threshold: float = 0.68
     confidence_margin: float = 0.16
     prediction_window: int = 10
@@ -91,6 +95,9 @@ def save_gesture_map(mapping: dict[str, Path]) -> None:
 
 
 def _validate_config(config: AppConfig) -> None:
+    if not isinstance(config.heavy_hand_assist, bool):
+        raise RuntimeError("heavy_hand_assist debe ser true o false.")
+
     positive_ints = {
         "target_samples_per_gesture": config.target_samples_per_gesture,
         "capture_stability_frames": config.capture_stability_frames,
@@ -116,6 +123,9 @@ def _validate_config(config: AppConfig) -> None:
     non_negative = {
         "capture_min_interval_seconds": config.capture_min_interval_seconds,
         "capture_stability_threshold": config.capture_stability_threshold,
+        "heavy_hand_interval_seconds": config.heavy_hand_interval_seconds,
+        "heavy_hand_idle_interval_seconds": config.heavy_hand_idle_interval_seconds,
+        "heavy_hand_stale_seconds": config.heavy_hand_stale_seconds,
         "cooldown_seconds": config.cooldown_seconds,
         "overlay_seconds": config.overlay_seconds,
     }

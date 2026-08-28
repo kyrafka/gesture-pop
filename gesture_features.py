@@ -60,6 +60,9 @@ class HandDetection:
     landmarks: list[object]
     handedness: str | None = None
     handedness_score: float = 0.0
+    source: str = "mediapipe"
+    confidence: float = 1.0
+    landmark_scores: tuple[float, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -71,6 +74,8 @@ class HandTrackingInfo:
     crossing: bool = False
     overlap_ratio: float = 0.0
     handedness: tuple[str, ...] = ()
+    sources: tuple[str, ...] = ()
+    assisted_hands: int = 0
 
 
 @dataclass
@@ -105,6 +110,7 @@ class _TrackedHand:
     velocity: tuple[float, float]
     handedness: str | None
     handedness_score: float
+    source: str
     last_seen_at: float
 
 
@@ -118,6 +124,10 @@ class HandIdentityTracker:
     def reset(self) -> None:
         self._tracks.clear()
 
+    @property
+    def track_count(self) -> int:
+        return len(self._tracks)
+
     def update(
         self,
         detections: list[HandDetection],
@@ -129,6 +139,9 @@ class HandIdentityTracker:
                 landmarks=_copy_landmarks(detection.landmarks),
                 handedness=_normalize_handedness(detection.handedness),
                 handedness_score=float(detection.handedness_score),
+                source=detection.source,
+                confidence=float(detection.confidence),
+                landmark_scores=tuple(float(score) for score in detection.landmark_scores),
             )
             for detection in detections[:2]
             if len(detection.landmarks) >= HAND_POINTS
@@ -249,6 +262,7 @@ class HandIdentityTracker:
                     velocity=(0.0, 0.0),
                     handedness=_normalize_handedness(observation.handedness),
                     handedness_score=float(observation.handedness_score),
+                    source=observation.source,
                     last_seen_at=timestamp,
                 )
             )
@@ -278,6 +292,25 @@ class HandIdentityTracker:
 
     def _update_track(self, track: _TrackedHand, observation: HandDetection, timestamp: float) -> None:
         raw_landmarks = _copy_landmarks(observation.landmarks)
+        if observation.source == "rtmpose" and len(raw_landmarks) == len(track.landmarks):
+            scores = observation.landmark_scores
+            filtered_landmarks = []
+            for index, (previous, point) in enumerate(zip(track.landmarks, raw_landmarks)):
+                score = scores[index] if index < len(scores) else 1.0
+                if score < 0.22:
+                    point_weight = 0.0
+                elif score < 0.42:
+                    point_weight = 0.4
+                else:
+                    point_weight = 1.0
+                filtered_landmarks.append(
+                    LandmarkPoint(
+                        x=previous.x * (1.0 - point_weight) + point.x * point_weight,
+                        y=previous.y * (1.0 - point_weight) + point.y * point_weight,
+                        z=previous.z,
+                    )
+                )
+            raw_landmarks = filtered_landmarks
         raw_center = _hand_center(raw_landmarks)
         delta = (raw_center[0] - track.center[0], raw_center[1] - track.center[1])
         speed = math.hypot(*delta)
@@ -298,6 +331,7 @@ class HandIdentityTracker:
         ):
             track.handedness = handedness
             track.handedness_score = score
+        track.source = observation.source
         track.last_seen_at = timestamp
 
     def _ordered_landmarks(self) -> list[list[LandmarkPoint]]:
@@ -321,7 +355,63 @@ class HandIdentityTracker:
             crossing=crossing,
             overlap_ratio=overlap_ratio,
             handedness=tuple(track.handedness or "?" for track in tracks),
+            sources=tuple(track.source for track in tracks),
+            assisted_hands=sum(track.source == "rtmpose" for track in tracks),
         )
+
+
+def merge_hand_detections(
+    primary: list[HandDetection],
+    supplemental: list[HandDetection],
+    max_hands: int = 2,
+) -> list[HandDetection]:
+    """Adds only RTMPose hands that MediaPipe appears to have missed."""
+    limit = max(1, int(max_hands))
+    base = [detection for detection in primary if len(detection.landmarks) >= HAND_POINTS][:limit]
+    if len(base) >= limit:
+        return base
+
+    extras = sorted(
+        (
+            detection
+            for detection in supplemental
+            if len(detection.landmarks) >= HAND_POINTS
+        ),
+        key=lambda detection: detection.confidence,
+        reverse=True,
+    )
+    if not extras:
+        return base
+    if not base:
+        return extras[:limit]
+
+    # With two heavy observations, one corresponds to the MediaPipe hand and the
+    # other is the useful recovery. Matching by center is enough to discard the duplicate.
+    if len(extras) >= 2 and len(base) == 1:
+        primary_center = _hand_center(base[0].landmarks)
+        matched_index = int(
+            np.argmin(
+                [
+                    math.hypot(
+                        _hand_center(extra.landmarks)[0] - primary_center[0],
+                        _hand_center(extra.landmarks)[1] - primary_center[1],
+                    )
+                    for extra in extras
+                ]
+            )
+        )
+        remaining = [extra for index, extra in enumerate(extras) if index != matched_index]
+        return (base + remaining)[:limit]
+
+    candidate = extras[0]
+    distance = math.dist(_hand_center(base[0].landmarks), _hand_center(candidate.landmarks))
+    duplicate_radius = max(0.11, min(0.22, 0.55 * max(
+        _hand_extent(base[0].landmarks),
+        _hand_extent(candidate.landmarks),
+    )))
+    if distance > duplicate_radius:
+        base.append(candidate)
+    return base[:limit]
 
 
 class LandmarkFeatureExtractor:
@@ -339,9 +429,24 @@ class LandmarkFeatureExtractor:
     def close(self) -> None:
         self.backend.close()
 
-    def extract(self, frame_bgr: np.ndarray) -> FeatureResult | None:
+    def extract(
+        self,
+        frame_bgr: np.ndarray,
+        supplemental_hands: list[HandDetection] | None = None,
+        expected_hands: int | None = None,
+    ) -> FeatureResult | None:
         started_at = time.perf_counter()
         detections, faces = self.backend.detect(frame_bgr)
+        hand_limit = _supplemental_hand_limit(
+            len(detections),
+            self.hand_tracker.track_count,
+            expected_hands,
+        )
+        detections = merge_hand_detections(
+            detections,
+            supplemental_hands or [],
+            max_hands=hand_limit,
+        )
         hands, tracking = self.hand_tracker.update(detections)
 
         parts: list[float] = []
@@ -365,6 +470,8 @@ class LandmarkFeatureExtractor:
             debug_parts.append("identity_lock=yes")
         if tracking.crossing:
             debug_parts.append("crossing=yes")
+        if tracking.assisted_hands:
+            debug_parts.append(f"rtmpose={tracking.assisted_hands}")
         debug_parts.append(f"tracking={tracking.mode}")
 
         if faces:
@@ -429,7 +536,9 @@ def draw_landmarks(frame_bgr: np.ndarray, result: FeatureResult | None) -> None:
         )
 
         side = result.tracking.handedness[hand_index] if hand_index < len(result.tracking.handedness) else "?"
-        label = f"M{pose.index}/{side[:1]}  A:{pose.angle_deg:+.0f}deg  T:{pose.tilt_deg:+.0f}deg"
+        source = result.tracking.sources[hand_index] if hand_index < len(result.tracking.sources) else "mediapipe"
+        source_label = "RTM" if source == "rtmpose" else "MP"
+        label = f"M{pose.index}/{side[:1]} {source_label}  A:{pose.angle_deg:+.0f}deg  T:{pose.tilt_deg:+.0f}deg"
         text_size = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)[0]
         label_y = max(0, y1 - 25)
         label_x2 = min(w - 1, x1 + text_size[0] + 12)
@@ -538,6 +647,28 @@ def _hand_center(landmarks) -> tuple[float, float]:
     points = np.array([(point.x, point.y) for point in landmarks], dtype=np.float32)
     center = points.mean(axis=0)
     return float(center[0]), float(center[1])
+
+
+def _supplemental_hand_limit(
+    primary_count: int,
+    tracked_count: int,
+    expected_hands: int | None,
+) -> int:
+    if expected_hands is not None:
+        return max(1, min(2, max(primary_count, int(expected_hands))))
+    if primary_count >= 2 or tracked_count >= 2:
+        return 2
+    if primary_count == 1 or tracked_count == 1:
+        return 1
+    return 2
+
+
+def _hand_extent(landmarks) -> float:
+    points = np.asarray([(point.x, point.y) for point in landmarks], dtype=np.float32)
+    if not len(points):
+        return 0.0
+    width, height = points.max(axis=0) - points.min(axis=0)
+    return float(math.hypot(float(width), float(height)))
 
 
 def _copy_landmarks(landmarks) -> list[LandmarkPoint]:

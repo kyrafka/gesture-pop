@@ -13,6 +13,7 @@ import numpy as np
 from app_config import AppConfig, load_config, load_gesture_map
 from gesture_features import BALANCED_TRACKING_PROFILE, LandmarkFeatureExtractor, draw_landmarks
 from gesture_runtime import PredictionState, TemporalGestureDecider
+from heavy_hand_backend import HeavyAssistantStatus, HeavyHandAssistant, result_to_hand_detections
 
 
 ROOT = Path(__file__).parent
@@ -64,9 +65,13 @@ def main() -> None:
     active_label: str | None = None
     active_until = 0.0
     show_vectors = True
+    heavy_assistant = HeavyHandAssistant(enabled=config.heavy_hand_assist)
+    heavy_status = heavy_assistant.start()
+    last_heavy_submit = 0.0
 
     print("Lanzador listo. Manten un gesto estable; v alterna vectores y q sale.")
     print(f"Seguimiento de manos: {BALANCED_TRACKING_PROFILE.name}.")
+    print(heavy_status.message)
     validation = payload.get("validation_accuracy")
     if validation is not None:
         print(f"Precision estimada del modelo al entrenar: {validation:.0%}")
@@ -78,8 +83,30 @@ def main() -> None:
                 break
             frame = cv2.flip(frame, 1)
 
-            result = extractor.extract(frame)
             now = time.monotonic()
+            _, updated_heavy_status = heavy_assistant.poll()
+            if updated_heavy_status is not None:
+                heavy_status = updated_heavy_status
+            heavy_result = heavy_assistant.fresh_result(now, config.heavy_hand_stale_seconds)
+            result = extractor.extract(frame, result_to_hand_detections(heavy_result))
+            needs_assist = bool(
+                result
+                and (
+                    result.tracking.crossing
+                    or result.tracking.cached_hands
+                    or result.tracking.assisted_hands
+                )
+            )
+            interval = (
+                config.heavy_hand_interval_seconds
+                if needs_assist
+                else config.heavy_hand_idle_interval_seconds
+            )
+            if now - last_heavy_submit >= interval:
+                reason = "cruce/oclusion" if needs_assist else "control"
+                if heavy_assistant.submit(frame, reason, captured_at=now):
+                    last_heavy_submit = now
+                    heavy_status = heavy_assistant.status
             probabilities = None
             classes = None
 
@@ -109,7 +136,17 @@ def main() -> None:
 
             if show_vectors:
                 draw_landmarks(frame, result)
-            draw_launcher_ui(frame, state, probabilities, classes, active_label, active_until, now, config)
+            draw_launcher_ui(
+                frame,
+                state,
+                probabilities,
+                classes,
+                active_label,
+                active_until,
+                now,
+                config,
+                heavy_status,
+            )
             cv2.imshow("Lanzador de imagenes por gesto", frame)
 
             key = cv2.waitKey(1) & 0xFF
@@ -119,6 +156,7 @@ def main() -> None:
                 show_vectors = not show_vectors
     finally:
         cap.release()
+        heavy_assistant.close()
         extractor.close()
         cv2.destroyAllWindows()
 
@@ -170,6 +208,7 @@ def draw_launcher_ui(
     active_until: float,
     now: float,
     config: AppConfig,
+    heavy_status: HeavyAssistantStatus | None = None,
 ) -> None:
     height, width = frame.shape[:2]
     panel_width = min(430, max(300, int(width * 0.36)))
@@ -245,7 +284,8 @@ def draw_launcher_ui(
     else:
         controls = (
             f"umbral {config.confidence_threshold:.0%} | "
-            f"margen {config.confidence_margin:.0%} | v vectores | q sale"
+            f"margen {config.confidence_margin:.0%} | "
+            f"RTM {heavy_status.state if heavy_status else 'off'} | v vectores | q sale"
         )
         put_fitted(frame, controls, (18, height - 24), width - 36, 0.48, (255, 255, 255), 1)
 
