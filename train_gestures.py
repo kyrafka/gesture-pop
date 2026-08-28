@@ -16,7 +16,13 @@ from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import StandardScaler
 
 from app_config import AppConfig, load_config, load_gesture_map
-from gesture_features import FeatureResult, LandmarkFeatureExtractor, draw_landmarks, summarize_vector
+from gesture_features import (
+    BALANCED_TRACKING_PROFILE,
+    FeatureResult,
+    LandmarkFeatureExtractor,
+    draw_landmarks,
+    summarize_vector,
+)
 from gesture_runtime import FeatureStabilityTracker
 
 
@@ -415,7 +421,11 @@ def _resolve_manifest_frame(value: str) -> Path | None:
 
 
 def is_hand_ready(result: FeatureResult | None) -> bool:
-    return result is not None and bool(result.hands)
+    return bool(
+        result is not None
+        and result.hands
+        and (result.tracking.live_hands > 0 or result.tracking.mode == "searching")
+    )
 
 
 def build_guidance(
@@ -601,6 +611,7 @@ def train_model(expected_labels: list[str], config: AppConfig) -> str:
         "feature_count": int(x.shape[1]),
         "sample_counts": counts,
         "validation_accuracy": validation_accuracy,
+        "tracking_profile": BALANCED_TRACKING_PROFILE.name,
         "trained_at": datetime.now().isoformat(timespec="seconds"),
     }
     joblib.dump(payload, MODEL_FILE)

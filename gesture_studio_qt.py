@@ -46,7 +46,13 @@ from PySide6.QtWidgets import (
 )
 
 from app_config import IMAGE_DIR, IMAGE_SUFFIXES, load_config, load_gesture_map, save_gesture_map
-from gesture_features import FeatureResult, LandmarkFeatureExtractor, draw_landmarks, summarize_vector
+from gesture_features import (
+    BALANCED_TRACKING_PROFILE,
+    FeatureResult,
+    LandmarkFeatureExtractor,
+    draw_landmarks,
+    summarize_vector,
+)
 from gesture_settings import expected_hands_for, load_gesture_settings, save_gesture_settings
 from gesture_launcher import MODEL_FILE
 from gesture_runtime import FeatureStabilityTracker
@@ -132,7 +138,11 @@ class CameraWorker(QObject):
                 failed_frames = 0
                 frame = cv2.flip(frame, 1)
                 result = extractor.extract(frame)
-                vector = result.vector if result is not None and result.hands else None
+                vector = (
+                    result.vector
+                    if result is not None and result.hands and result.tracking.live_hands > 0
+                    else None
+                )
                 stable, movement = tracker.update(vector)
                 annotated = frame.copy()
                 draw_landmarks(annotated, result)
@@ -548,6 +558,9 @@ class GestureStudioQt(QMainWindow):
         telemetry_title = QLabel("Lectura de vectores")
         telemetry_title.setObjectName("sectionTitle")
         self.hand_count_label = QLabel("Manos  0")
+        self.tracking_label = QLabel(f"Seguimiento {BALANCED_TRACKING_PROFILE.name} · esperando")
+        self.tracking_label.setObjectName("muted")
+        self.tracking_label.setWordWrap(True)
         self.face_label = QLabel("Cara  no detectada")
         self.pose_label = QLabel("Posicion  --\nAngulo  --\nInclinacion  --")
         self.pose_label.setWordWrap(True)
@@ -556,6 +569,7 @@ class GestureStudioQt(QMainWindow):
         self.vector_summary_label.setWordWrap(True)
         telemetry_layout.addWidget(telemetry_title)
         telemetry_layout.addWidget(self.hand_count_label)
+        telemetry_layout.addWidget(self.tracking_label)
         telemetry_layout.addWidget(self.face_label)
         telemetry_layout.addWidget(self.pose_label)
         telemetry_layout.addWidget(self.vector_summary_label)
@@ -945,11 +959,32 @@ class GestureStudioQt(QMainWindow):
         faces = len(result.faces) if result else 0
         expected_hands = expected_hands_for(self.gesture_settings, self.selected_label)
         quality_score, quality_notes = self._capture_quality(result, stable, movement, expected_hands)
-        self.hand_count_label.setText(f"Manos  {hands}")
+        live_hands = result.tracking.live_hands if result else 0
+        cached_hands = result.tracking.cached_hands if result else 0
+        if cached_hands:
+            self.hand_count_label.setText(f"Manos  {hands} · {live_hands} en vivo")
+        else:
+            self.hand_count_label.setText(f"Manos  {hands}")
         self.face_label.setText(f"Cara  {'detectada' if faces else 'no detectada'}")
-        occlusion_hold = bool(result and "occlusion_hold=yes" in result.debug)
+        occlusion_hold = bool(result and result.tracking.cached_hands)
+        tracking_names = {
+            "searching": "buscando manos",
+            "single": "una mano",
+            "locked": "identidades bloqueadas",
+            "crossing": "cruce protegido",
+            "occlusion_hold": "oclusion breve protegida",
+            "dropout_hold": "senal sostenida",
+            "reacquired": "identidades readquiridas",
+        }
+        tracking_mode = tracking_names.get(result.tracking.mode, result.tracking.mode) if result else "esperando"
+        processing = f" · {result.processing_ms:.0f} ms" if result else ""
+        self.tracking_label.setText(
+            f"Seguimiento {BALANCED_TRACKING_PROFILE.name} · {tracking_mode}{processing}"
+        )
         if occlusion_hold:
-            self.vector_status.setText("Oclusion breve")
+            self.vector_status.setText("Cruce protegido")
+        elif result and result.tracking.crossing:
+            self.vector_status.setText("Identidad bloqueada")
         else:
             self.vector_status.setText("Vector estable" if stable else "Buscando estabilidad")
         stability_count = self.config.capture_stability_frames if stable else max(
@@ -962,15 +997,18 @@ class GestureStudioQt(QMainWindow):
         self.quality_status_label.setText("\n".join(quality_notes))
 
         if result and result.hand_poses:
-            pose = result.hand_poses[0]
-            self.pose_label.setText(
-                f"Posicion  X {pose.center_x:.0%}  Y {pose.center_y:.0%}\n"
-                f"Zona  {pose.zone}\nAngulo  {pose.angle_deg:+.0f} deg\n"
-                f"Inclinacion  {pose.tilt_deg:+.0f} deg"
-            )
+            pose_lines = []
+            for pose in result.hand_poses[:2]:
+                pose_lines.append(
+                    f"M{pose.index}  X {pose.center_x:.0%}  Y {pose.center_y:.0%} · {pose.zone}\n"
+                    f"A {pose.angle_deg:+.0f} deg · T {pose.tilt_deg:+.0f} deg"
+                )
+            self.pose_label.setText("\n".join(pose_lines))
             self.guidance_label.setText(
-                "Manos juntas detectadas: sosteniendo vector breve."
+                "Cruce protegido: conserva la postura hasta recuperar ambas manos."
                 if occlusion_hold
+                else "Cruce detectado: las identidades M1/M2 siguen bloqueadas."
+                if result.tracking.crossing
                 else "Listo para capturar."
                 if stable
                 else "Manten el gesto quieto hasta completar la barra."
@@ -1016,9 +1054,11 @@ class GestureStudioQt(QMainWindow):
         if result and result.faces:
             score += 10
             notes.append("Cara detectada")
-        if result and "occlusion_hold=yes" in result.debug:
-            score = max(0, score - 15)
-            notes.append("Oclusion breve")
+        if result and result.tracking.cached_hands:
+            score = max(0, score - 10)
+            notes.insert(0, "Oclusion protegida")
+        elif result and result.tracking.crossing:
+            notes.insert(0, "Cruce protegido")
         return min(score, 100), notes[:4]
 
     def _current_guided_target(self) -> CaptureTarget | None:
@@ -1613,7 +1653,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Gesture Pop Studio con PySide6")
     parser.add_argument("--smoke-test", action="store_true", help="Construye la interfaz sin abrir la camara")
     parser.add_argument("--screenshot", type=Path, help="Guarda una captura de la interfaz durante el smoke test")
-    parser.add_argument("--page", type=int, choices=range(4), default=0, help="Pagina inicial para pruebas visuales")
+    parser.add_argument("--page", type=int, choices=range(5), default=0, help="Pagina inicial para pruebas visuales")
     parser.add_argument("--label", help="Gesto seleccionado durante las pruebas visuales")
     parser.add_argument("--sidebar-collapsed", action="store_true", help="Inicia con el panel lateral cerrado")
     args = parser.parse_args()

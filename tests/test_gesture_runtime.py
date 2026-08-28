@@ -25,6 +25,17 @@ class FeatureStabilityTrackerTests(unittest.TestCase):
 
         self.assertEqual(tracker.sample_count, 0)
 
+    def test_restarts_window_after_an_extreme_vector_jump(self) -> None:
+        tracker = FeatureStabilityTracker(frames=3, threshold=0.05, jump_threshold=0.4)
+        tracker.update(np.array([0.0, 0.0]))
+        tracker.update(np.array([0.01, 0.01]))
+
+        stable, movement = tracker.update(np.array([2.0, 2.0]))
+
+        self.assertFalse(stable)
+        self.assertGreater(movement, 0.4)
+        self.assertEqual(tracker.sample_count, 1)
+
 
 class TemporalGestureDeciderTests(unittest.TestCase):
     def make_decider(self) -> TemporalGestureDecider:

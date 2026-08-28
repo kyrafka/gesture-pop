@@ -11,7 +11,7 @@ import joblib
 import numpy as np
 
 from app_config import AppConfig, load_config, load_gesture_map
-from gesture_features import LandmarkFeatureExtractor, draw_landmarks
+from gesture_features import BALANCED_TRACKING_PROFILE, LandmarkFeatureExtractor, draw_landmarks
 from gesture_runtime import PredictionState, TemporalGestureDecider
 
 
@@ -66,6 +66,7 @@ def main() -> None:
     show_vectors = True
 
     print("Lanzador listo. Manten un gesto estable; v alterna vectores y q sale.")
+    print(f"Seguimiento de manos: {BALANCED_TRACKING_PROFILE.name}.")
     validation = payload.get("validation_accuracy")
     if validation is not None:
         print(f"Precision estimada del modelo al entrenar: {validation:.0%}")
@@ -82,7 +83,7 @@ def main() -> None:
             probabilities = None
             classes = None
 
-            if result is not None and result.hands:
+            if result is not None and result.hands and result.tracking.live_hands > 0:
                 expected_features = payload.get("feature_count")
                 if expected_features is not None and len(result.vector) != expected_features:
                     raise RuntimeError(

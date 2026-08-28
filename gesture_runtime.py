@@ -21,9 +21,10 @@ class PredictionState:
 
 
 class FeatureStabilityTracker:
-    def __init__(self, frames: int, threshold: float) -> None:
+    def __init__(self, frames: int, threshold: float, jump_threshold: float | None = None) -> None:
         self.frames = frames
         self.threshold = threshold
+        self.jump_threshold = jump_threshold if jump_threshold is not None else max(0.28, threshold * 3.0)
         self._vectors: deque[np.ndarray] = deque(maxlen=frames)
 
     def reset(self) -> None:
@@ -38,7 +39,15 @@ class FeatureStabilityTracker:
             self.reset()
             return False, float("inf")
 
-        self._vectors.append(np.asarray(vector, dtype=np.float32))
+        current = np.asarray(vector, dtype=np.float32)
+        if self._vectors:
+            frame_jump = float(np.sqrt(np.mean((current - self._vectors[-1]) ** 2)))
+            if frame_jump > self.jump_threshold:
+                self._vectors.clear()
+                self._vectors.append(current)
+                return False, frame_jump
+
+        self._vectors.append(current)
         if len(self._vectors) < self.frames:
             return False, float("inf")
 

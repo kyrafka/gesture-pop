@@ -6,12 +6,13 @@ Los datos personales de entrenamiento no se publican: `.gitignore` excluye captu
 
 ## Interfaz visual Qt
 
-Haz doble clic en `NO_TOCAR/ABRIR_GESTURE_POP.bat` para abrir Gesture Pop Studio. La interfaz usa PySide6/Qt, iconos QtAwesome y transiciones breves; organiza el flujo en cuatro vistas:
+Haz doble clic en `NO_TOCAR/ABRIR_GESTURE_POP.bat` para abrir Gesture Pop Studio. La interfaz usa PySide6/Qt, iconos QtAwesome y transiciones breves; organiza el flujo en cinco vistas:
 
 - `Captura`: camara, landmarks, estabilidad, telemetria y captura guiada.
 - `Muestras`: galeria de fotos, referencias y vectores antiguos sin foto.
 - `Entrenamiento`: cobertura por clase y creacion del modelo.
 - `Reconocimiento`: acciones configuradas y lanzamiento del detector en vivo.
+- `Evidencias`: fotos independientes con los vectores dibujados, sin agregarlas al entrenamiento.
 
 La flecha de la esquina superior del panel lateral lo reduce a un riel de iconos y lo vuelve a desplegar hacia la derecha. Tambien puedes alternarlo con `Ctrl+B` o desde `Ver > Panel lateral`.
 
@@ -49,6 +50,10 @@ Cada mano detectada usa un color distinto y muestra:
 - `A`: giro 2D; `0deg` apunta arriba, `+90deg` a la derecha y `-90deg` a la izquierda.
 - `T`: inclinacion estimada en profundidad entre muneca y centro de la palma.
 - `zona`: ubicacion aproximada, por ejemplo `arriba-izq` o `medio-centro`.
+
+El seguimiento equilibrado conserva las identidades `M1` y `M2` usando posicion, velocidad, forma y lateralidad de MediaPipe. Si las manos se cruzan, la interfaz muestra `Cruce protegido`; si una desaparece unas decimas de segundo, conserva su ultimo vector mientras intenta recuperarla. Un salto extremo reinicia la ventana de estabilidad para evitar guardar una muestra corrupta.
+
+Este perfil usa el Hand Landmarker completo que ya esta en `models/`, mas un rastreador temporal ligero. Da mas continuidad que ordenar las manos en cada frame, sin el costo de ejecutar OpenPose/MMPose u otra red neuronal pesada encima de MediaPipe.
 
 La caja y los angulos son telemetria visual. No cambian el vector de entrenamiento, por lo que las muestras antiguas siguen siendo compatibles. `T` es una estimacion basada en la profundidad relativa de MediaPipe, no una medicion fisica calibrada.
 
@@ -174,4 +179,4 @@ Si reconoce poco, baja `confidence_threshold` de `0.68` a `0.60`. Si lanza image
 
 ## Como se forman los vectores
 
-MediaPipe extrae 21 puntos por mano y puntos clave de cara. El proyecto centra y escala cada grupo de puntos, agrega distancias entre dedos y relaciones mano-cara, y normaliza todo antes del clasificador KNN. Las manos se ordenan de izquierda a derecha para que una deteccion con dos manos no cambie de posicion aleatoriamente en el vector.
+MediaPipe extrae 21 puntos por mano y puntos clave de cara. El proyecto centra y escala cada grupo de puntos, agrega distancias entre dedos y relaciones mano-cara, y normaliza todo antes del clasificador KNN. Cuando aparecen dos manos por primera vez se asignan de izquierda a derecha; despues el rastreador conserva esas identidades aunque se crucen para que las dos mitades del vector no se intercambien.
