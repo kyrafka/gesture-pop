@@ -365,7 +365,7 @@ def merge_hand_detections(
     supplemental: list[HandDetection],
     max_hands: int = 2,
 ) -> list[HandDetection]:
-    """Adds only RTMPose hands that MediaPipe appears to have missed."""
+    """Keep primary detections and use supplemental ones only to fill gaps."""
     limit = max(1, int(max_hands))
     base = [detection for detection in primary if len(detection.landmarks) >= HAND_POINTS][:limit]
     if len(base) >= limit:
@@ -434,19 +434,43 @@ class LandmarkFeatureExtractor:
         frame_bgr: np.ndarray,
         supplemental_hands: list[HandDetection] | None = None,
         expected_hands: int | None = None,
+        primary_hands: list[HandDetection] | None = None,
     ) -> FeatureResult | None:
         started_at = time.perf_counter()
-        detections, faces = self.backend.detect(frame_bgr)
-        hand_limit = _supplemental_hand_limit(
-            len(detections),
-            self.hand_tracker.track_count,
-            expected_hands,
-        )
-        detections = merge_hand_detections(
-            detections,
-            supplemental_hands or [],
-            max_hands=hand_limit,
-        )
+        mediapipe_hands, faces = self.backend.detect(frame_bgr)
+        if primary_hands is not None:
+            preferred = [
+                detection
+                for detection in primary_hands
+                if len(detection.landmarks) >= HAND_POINTS
+            ]
+            fallback = [
+                detection
+                for detection in mediapipe_hands
+                if len(detection.landmarks) >= HAND_POINTS
+            ]
+            primary_count = len(preferred) or len(fallback)
+            hand_limit = _supplemental_hand_limit(
+                primary_count,
+                self.hand_tracker.track_count,
+                expected_hands,
+            )
+            detections = merge_hand_detections(
+                preferred or fallback,
+                fallback if preferred else supplemental_hands or [],
+                max_hands=hand_limit,
+            )
+        else:
+            hand_limit = _supplemental_hand_limit(
+                len(mediapipe_hands),
+                self.hand_tracker.track_count,
+                expected_hands,
+            )
+            detections = merge_hand_detections(
+                mediapipe_hands,
+                supplemental_hands or [],
+                max_hands=hand_limit,
+            )
         hands, tracking = self.hand_tracker.update(detections)
 
         parts: list[float] = []

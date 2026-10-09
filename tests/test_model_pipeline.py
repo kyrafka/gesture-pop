@@ -44,6 +44,9 @@ class ModelPipelineTests(unittest.TestCase):
             self.assertEqual(payload["feature_count"], 194)
             self.assertEqual(payload["labels"], labels)
             self.assertEqual(payload["tracking_profile"], "equilibrado")
+            self.assertGreaterEqual(payload["validation_accuracy"], 0.99)
+            self.assertGreaterEqual(payload["validation_balanced_accuracy"], 0.99)
+            self.assertIn("balance por gesto", message)
 
             query = np.full(194, 6.0, dtype=np.float32)
             probabilities = payload["model"].predict_proba([query])[0]

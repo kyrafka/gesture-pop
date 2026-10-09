@@ -54,8 +54,9 @@ def main() -> None:
         ) from exc
 
     cap = cv2.VideoCapture(config.camera_index)
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
-    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
+    cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 960)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 540)
     if not cap.isOpened():
         extractor.close()
         raise SystemExit(
@@ -65,9 +66,10 @@ def main() -> None:
     active_label: str | None = None
     active_until = 0.0
     show_vectors = True
-    heavy_assistant = HeavyHandAssistant(enabled=config.heavy_hand_assist)
+    heavy_assistant = HeavyHandAssistant(enabled=True)
     heavy_status = heavy_assistant.start()
     last_heavy_submit = 0.0
+    last_heavy_result_id: int | None = None
 
     print("Lanzador listo. Manten un gesto estable; v alterna vectores y q sale.")
     print(f"Seguimiento de manos: {BALANCED_TRACKING_PROFILE.name}.")
@@ -88,22 +90,31 @@ def main() -> None:
             if updated_heavy_status is not None:
                 heavy_status = updated_heavy_status
             heavy_result = heavy_assistant.fresh_result(now, config.heavy_hand_stale_seconds)
-            result = extractor.extract(frame, result_to_hand_detections(heavy_result))
-            needs_assist = bool(
-                result
-                and (
-                    result.tracking.crossing
-                    or result.tracking.cached_hands
-                    or result.tracking.assisted_hands
-                )
+            heavy_hands = result_to_hand_detections(heavy_result)
+            new_heavy_anchor = bool(
+                heavy_result is not None
+                and heavy_result.request_id != last_heavy_result_id
             )
-            interval = (
-                config.heavy_hand_interval_seconds
-                if needs_assist
-                else config.heavy_hand_idle_interval_seconds
+            if new_heavy_anchor:
+                last_heavy_result_id = heavy_result.request_id
+            result = extractor.extract(
+                frame,
+                supplemental_hands=heavy_hands,
+                primary_hands=heavy_hands if new_heavy_anchor else None,
             )
-            if now - last_heavy_submit >= interval:
-                reason = "cruce/oclusion" if needs_assist else "control"
+            recovery_needed = bool(
+                result is None
+                or len(result.hands) < 1
+                or result.tracking.cached_hands
+                or result.tracking.crossing
+            )
+            heavy_interval = (
+                max(0.18, config.heavy_hand_interval_seconds * 0.5)
+                if recovery_needed
+                else config.heavy_hand_interval_seconds
+            )
+            if now - last_heavy_submit >= heavy_interval:
+                reason = "recuperacion" if recovery_needed else "seguimiento"
                 if heavy_assistant.submit(frame, reason, captured_at=now):
                     last_heavy_submit = now
                     heavy_status = heavy_assistant.status

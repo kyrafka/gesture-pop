@@ -10,7 +10,7 @@ from pathlib import Path
 import cv2
 import joblib
 import numpy as np
-from sklearn.model_selection import StratifiedKFold, cross_val_score
+from sklearn.model_selection import StratifiedKFold, cross_validate
 from sklearn.neighbors import KNeighborsClassifier
 from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import StandardScaler
@@ -595,12 +595,20 @@ def train_model(expected_labels: list[str], config: AppConfig) -> str:
     )
 
     validation_accuracy = None
+    validation_balanced_accuracy = None
     if min_count >= 4:
         folds = min(5, min_count)
         splitter = StratifiedKFold(n_splits=folds, shuffle=True, random_state=42)
         try:
-            scores = cross_val_score(model, x, y, cv=splitter, scoring="accuracy")
-            validation_accuracy = float(scores.mean())
+            scores = cross_validate(
+                model,
+                x,
+                y,
+                cv=splitter,
+                scoring=("accuracy", "balanced_accuracy"),
+            )
+            validation_accuracy = float(scores["test_accuracy"].mean())
+            validation_balanced_accuracy = float(scores["test_balanced_accuracy"].mean())
         except ValueError as exc:
             print(f"No pude calcular validacion cruzada: {exc}")
 
@@ -611,12 +619,18 @@ def train_model(expected_labels: list[str], config: AppConfig) -> str:
         "feature_count": int(x.shape[1]),
         "sample_counts": counts,
         "validation_accuracy": validation_accuracy,
+        "validation_balanced_accuracy": validation_balanced_accuracy,
         "tracking_profile": BALANCED_TRACKING_PROFILE.name,
         "trained_at": datetime.now().isoformat(timespec="seconds"),
     }
     joblib.dump(payload, MODEL_FILE)
 
-    score_text = f" Precision estimada: {validation_accuracy:.0%}." if validation_accuracy is not None else ""
+    score_text = (
+        f" Validacion cruzada: exactitud {validation_accuracy:.0%}, "
+        f"balance por gesto {validation_balanced_accuracy:.0%}."
+        if validation_accuracy is not None and validation_balanced_accuracy is not None
+        else ""
+    )
     target_warning = ""
     if min_count < config.target_samples_per_gesture:
         target_warning = f" Recomendado: {config.target_samples_per_gesture} por gesto."

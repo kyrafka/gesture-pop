@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+from dataclasses import replace
 import os
 import re
 import shutil
@@ -10,6 +11,7 @@ import time
 from pathlib import Path
 
 import cv2
+import joblib
 import numpy as np
 from PySide6.QtCore import (
     QEasingCurve,
@@ -25,7 +27,6 @@ from PySide6.QtGui import QAction, QCloseEvent, QIcon, QImage, QKeySequence, QPi
 from PySide6.QtWidgets import (
     QApplication,
     QButtonGroup,
-    QCheckBox,
     QComboBox,
     QDialog,
     QFileDialog,
@@ -34,6 +35,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QInputDialog,
     QLabel,
+    QLayout,
     QListWidget,
     QListWidgetItem,
     QMainWindow,
@@ -42,17 +44,23 @@ from PySide6.QtWidgets import (
     QPushButton,
     QScrollArea,
     QSizePolicy,
+    QSlider,
     QVBoxLayout,
     QWidget,
 )
 
-from app_config import IMAGE_DIR, IMAGE_SUFFIXES, load_config, load_gesture_map, save_gesture_map
+from app_config import (
+    IMAGE_DIR,
+    IMAGE_SUFFIXES,
+    load_config,
+    load_gesture_map,
+    save_config,
+    save_gesture_map,
+)
 from gesture_features import (
-    BALANCED_TRACKING_PROFILE,
     FeatureResult,
     LandmarkFeatureExtractor,
     draw_landmarks,
-    summarize_vector,
 )
 from heavy_hand_backend import HeavyAssistantStatus, HeavyHandAssistant, result_to_hand_detections
 from gesture_settings import expected_hands_for, load_gesture_settings, save_gesture_settings
@@ -80,6 +88,10 @@ ROOT = Path(__file__).parent
 EVIDENCE_DIR = ROOT / "data" / "evidencias_vectores"
 CAMERA_FRAME_FAILURE_LIMIT = 12
 CAMERA_REOPEN_DELAY_SECONDS = 0.35
+CAMERA_FRAME_WIDTH = 960
+CAMERA_FRAME_HEIGHT = 540
+PREVIEW_FRAME_INTERVAL_SECONDS = 1.0 / 24.0
+QUALITY_UPDATE_INTERVAL_SECONDS = 0.25
 
 
 class CameraWorker(QObject):
@@ -93,9 +105,7 @@ class CameraWorker(QObject):
         camera_index: int,
         stability_frames: int,
         stability_threshold: float,
-        heavy_enabled: bool,
         heavy_interval_seconds: float,
-        heavy_idle_interval_seconds: float,
         heavy_stale_seconds: float,
         expected_hands: int,
     ) -> None:
@@ -103,9 +113,7 @@ class CameraWorker(QObject):
         self.camera_index = camera_index
         self.stability_frames = stability_frames
         self.stability_threshold = stability_threshold
-        self.heavy_enabled = heavy_enabled
         self.heavy_interval_seconds = heavy_interval_seconds
-        self.heavy_idle_interval_seconds = heavy_idle_interval_seconds
         self.heavy_stale_seconds = heavy_stale_seconds
         self.expected_hands = expected_hands
         self.running = True
@@ -121,7 +129,7 @@ class CameraWorker(QObject):
         capture = None
         heavy_assistant = None
         try:
-            self.status_changed.emit("Preparando MediaPipe...", "busy")
+            self.status_changed.emit("Preparando detectores...", "busy")
             extractor = LandmarkFeatureExtractor()
             capture, backend_name = self._open_capture()
             if not capture.isOpened():
@@ -132,9 +140,11 @@ class CameraWorker(QObject):
                 return
 
             tracker = FeatureStabilityTracker(self.stability_frames, self.stability_threshold)
-            heavy_assistant = HeavyHandAssistant(enabled=self.heavy_enabled)
+            heavy_assistant = HeavyHandAssistant(enabled=True)
             self.heavy_status_changed.emit(heavy_assistant.start())
             last_heavy_submit = 0.0
+            last_heavy_result_id: int | None = None
+            next_preview_emit = 0.0
             failed_frames = 0
             self.status_changed.emit(f"Camara activa ({backend_name})", "ok")
             while self.running:
@@ -167,27 +177,33 @@ class CameraWorker(QObject):
                 if heavy_status is not None:
                     self.heavy_status_changed.emit(heavy_status)
                 heavy_result = heavy_assistant.fresh_result(now, self.heavy_stale_seconds)
+                heavy_hands = result_to_hand_detections(heavy_result)
+                new_heavy_anchor = bool(
+                    heavy_result is not None
+                    and heavy_result.request_id != last_heavy_result_id
+                )
+                if new_heavy_anchor:
+                    last_heavy_result_id = heavy_result.request_id
                 result = extractor.extract(
                     frame,
-                    result_to_hand_detections(heavy_result),
                     expected_hands=self.expected_hands,
+                    supplemental_hands=heavy_hands,
+                    primary_hands=heavy_hands if new_heavy_anchor else None,
                 )
 
-                needs_assist = bool(
-                    result
-                    and (
-                        result.tracking.crossing
-                        or result.tracking.cached_hands
-                        or result.tracking.assisted_hands
-                    )
+                recovery_needed = bool(
+                    result is None
+                    or len(result.hands) < self.expected_hands
+                    or result.tracking.cached_hands
+                    or result.tracking.crossing
                 )
-                interval = (
-                    self.heavy_interval_seconds
-                    if needs_assist
-                    else self.heavy_idle_interval_seconds
+                heavy_interval = (
+                    max(0.18, self.heavy_interval_seconds * 0.5)
+                    if recovery_needed
+                    else self.heavy_interval_seconds
                 )
-                if now - last_heavy_submit >= interval:
-                    reason = "cruce/oclusion" if needs_assist else "control"
+                if now - last_heavy_submit >= heavy_interval:
+                    reason = "recuperacion" if recovery_needed else "seguimiento"
                     if heavy_assistant.submit(frame, reason, captured_at=now):
                         last_heavy_submit = now
                         self.heavy_status_changed.emit(heavy_assistant.status)
@@ -197,9 +213,12 @@ class CameraWorker(QObject):
                     else None
                 )
                 stable, movement = tracker.update(vector)
-                annotated = frame.copy()
-                draw_landmarks(annotated, result)
-                self.frame_ready.emit(annotated, result, stable, movement)
+                if now >= next_preview_emit:
+                    draw_landmarks(frame, result)
+                    self.frame_ready.emit(frame, result, stable, movement)
+                    next_preview_emit += PREVIEW_FRAME_INTERVAL_SECONDS
+                    if next_preview_emit <= now:
+                        next_preview_emit = now + PREVIEW_FRAME_INTERVAL_SECONDS
                 time.sleep(0.005)
         except Exception as exc:
             self.status_changed.emit(f"Error de camara: {exc}", "error")
@@ -219,8 +238,9 @@ class CameraWorker(QObject):
 
         for backend, backend_name in backends:
             capture = cv2.VideoCapture(self.camera_index, backend)
-            capture.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
-            capture.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
+            capture.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+            capture.set(cv2.CAP_PROP_FRAME_WIDTH, CAMERA_FRAME_WIDTH)
+            capture.set(cv2.CAP_PROP_FRAME_HEIGHT, CAMERA_FRAME_HEIGHT)
             if capture.isOpened():
                 return capture, backend_name
             capture.release()
@@ -302,7 +322,6 @@ class GestureStudioQt(QMainWindow):
         super().__init__()
         self.config = load_config()
         self.camera_index = self.config.camera_index
-        self.heavy_assist_enabled = self.config.heavy_hand_assist
         self.gesture_map = load_gesture_map()
         self.labels = list(self.gesture_map)
         self.gesture_settings = load_gesture_settings(self.labels)
@@ -313,6 +332,8 @@ class GestureStudioQt(QMainWindow):
         self.current_result: FeatureResult | None = None
         self.current_stable = False
         self.current_movement = float("inf")
+        self._last_quality_update_at = 0.0
+        self._cached_capture_quality = (0, ["Esperando imagen de la camara"])
         self.evidence_countdown_remaining = 0
         self.evidence_timer = QTimer(self)
         self.evidence_timer.timeout.connect(self._tick_evidence_countdown)
@@ -453,6 +474,7 @@ class GestureStudioQt(QMainWindow):
 
         self.gesture_list = QListWidget()
         self.gesture_list.setIconSize(QSize(46, 46))
+        self.gesture_list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.gesture_list.currentItemChanged.connect(self._on_gesture_selected)
         gesture_layout.addWidget(self.gesture_list, 1)
 
@@ -486,11 +508,12 @@ class GestureStudioQt(QMainWindow):
         self.model_badge = QLabel()
         self.model_badge.setObjectName("warning")
         layout.addWidget(self.model_badge)
-        self.heavy_toggle = QCheckBox("Asistencia RTMPose")
-        self.heavy_toggle.setToolTip("Usar RTMPose cuando MediaPipe pierde una mano")
-        self.heavy_toggle.setChecked(self.heavy_assist_enabled)
-        self.heavy_toggle.toggled.connect(self._toggle_heavy_assist)
-        layout.addWidget(self.heavy_toggle)
+        self.heavy_badge = QLabel("Detector de manos")
+        self.heavy_badge.setObjectName("success")
+        self.heavy_badge.setToolTip(
+            "RTMPose detecta los puntos de la mano; MediaPipe ayuda con el seguimiento y el respaldo."
+        )
+        layout.addWidget(self.heavy_badge)
         self.camera_selector = QComboBox()
         self.camera_selector.setToolTip("Elegir camara")
         for index in range(4):
@@ -526,9 +549,6 @@ class GestureStudioQt(QMainWindow):
         camera_header.addWidget(self.camera_dot)
         camera_header.addWidget(self.camera_status)
         camera_header.addStretch()
-        self.vector_status = QLabel("Sin vector")
-        self.vector_status.setObjectName("muted")
-        camera_header.addWidget(self.vector_status)
         camera_layout.addLayout(camera_header)
 
         self.video_label = QLabel("Iniciando camara...")
@@ -580,10 +600,12 @@ class GestureStudioQt(QMainWindow):
         layout.addWidget(camera_panel, 1)
 
         inspector = QWidget()
+        self.inspector = inspector
         inspector.setFixedWidth(310)
         inspector_layout = QVBoxLayout(inspector)
         inspector_layout.setContentsMargins(0, 0, 0, 0)
         inspector_layout.setSpacing(12)
+        inspector_layout.setSizeConstraint(QLayout.SizeConstraint.SetMinimumSize)
 
         target = QFrame()
         target.setObjectName("panel")
@@ -592,12 +614,14 @@ class GestureStudioQt(QMainWindow):
         eyebrow.setObjectName("eyebrow")
         self.target_preview = QLabel()
         self.target_preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.target_preview.setMinimumHeight(165)
+        self.target_preview.setFixedHeight(165)
         self.target_preview.setStyleSheet("background: #0a0d10; border-radius: 4px;")
         self.selected_name = QLabel("Sin gesto")
         self.selected_name.setObjectName("sectionTitle")
+        self.selected_name.setWordWrap(True)
         self.selected_count = QLabel("0 muestras")
         self.selected_count.setObjectName("muted")
+        self.selected_count.setWordWrap(True)
         self.target_progress = QProgressBar()
         self.target_progress.setRange(0, self.config.target_samples_per_gesture)
         self.expected_hands_selector = QComboBox()
@@ -616,30 +640,18 @@ class GestureStudioQt(QMainWindow):
         telemetry = QFrame()
         telemetry.setObjectName("panel")
         telemetry_layout = QVBoxLayout(telemetry)
-        telemetry_title = QLabel("Lectura de vectores")
+        telemetry_title = QLabel("Lectura de manos")
         telemetry_title.setObjectName("sectionTitle")
-        self.hand_count_label = QLabel("Manos  0")
-        self.tracking_label = QLabel(f"Seguimiento {BALANCED_TRACKING_PROFILE.name} · esperando")
+        self.hand_count_label = QLabel("Manos  0/1")
+        self.tracking_label = QLabel("Buscando mano")
         self.tracking_label.setObjectName("muted")
         self.tracking_label.setWordWrap(True)
-        self.heavy_status_label = QLabel(
-            "RTMPose · preparando" if self.heavy_assist_enabled else "RTMPose · desactivado"
-        )
-        self.heavy_status_label.setObjectName("muted")
-        self.heavy_status_label.setWordWrap(True)
-        self.face_label = QLabel("Cara  no detectada")
-        self.pose_label = QLabel("Posicion  --\nAngulo  --\nInclinacion  --")
+        self.pose_label = QLabel("Posición -- · Giro --")
         self.pose_label.setWordWrap(True)
-        self.vector_summary_label = QLabel("Esperando landmarks...")
-        self.vector_summary_label.setObjectName("muted")
-        self.vector_summary_label.setWordWrap(True)
         telemetry_layout.addWidget(telemetry_title)
         telemetry_layout.addWidget(self.hand_count_label)
         telemetry_layout.addWidget(self.tracking_label)
-        telemetry_layout.addWidget(self.heavy_status_label)
-        telemetry_layout.addWidget(self.face_label)
         telemetry_layout.addWidget(self.pose_label)
-        telemetry_layout.addWidget(self.vector_summary_label)
         inspector_layout.addWidget(telemetry)
 
         quality = QFrame()
@@ -648,11 +660,12 @@ class GestureStudioQt(QMainWindow):
         quality_title = QLabel("Calidad de captura")
         quality_title.setObjectName("sectionTitle")
         self.quality_score_label = QLabel("--")
-        self.quality_score_label.setObjectName("metric")
+        self.quality_score_label.setObjectName("qualityScore")
         self.quality_status_label = QLabel("Esperando video")
         self.quality_status_label.setObjectName("muted")
         self.quality_status_label.setWordWrap(True)
         self.quality_bar = QProgressBar()
+        self.quality_bar.setObjectName("qualityBar")
         self.quality_bar.setRange(0, 100)
         quality_layout.addWidget(quality_title)
         quality_layout.addWidget(self.quality_score_label)
@@ -660,7 +673,14 @@ class GestureStudioQt(QMainWindow):
         quality_layout.addWidget(self.quality_status_label)
         inspector_layout.addWidget(quality)
         inspector_layout.addStretch()
-        layout.addWidget(inspector)
+        inspector_scroll = QScrollArea()
+        self.inspector_scroll = inspector_scroll
+        inspector_scroll.setWidgetResizable(True)
+        inspector_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        inspector_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        inspector_scroll.setFixedWidth(326)
+        inspector_scroll.setWidget(inspector)
+        layout.addWidget(inspector_scroll)
         return page
 
     def _build_dataset_page(self) -> QWidget:
@@ -706,8 +726,16 @@ class GestureStudioQt(QMainWindow):
         copy = QLabel("Minimo 3 por gesto. Recomendado 20 con variaciones de luz, distancia y angulo.")
         copy.setObjectName("muted")
         copy.setWordWrap(True)
+        self.training_summary_label = QLabel()
+        self.training_summary_label.setObjectName("muted")
+        self.training_summary_label.setWordWrap(True)
+        self.training_validation_label = QLabel()
+        self.training_validation_label.setObjectName("muted")
+        self.training_validation_label.setWordWrap(True)
         text.addWidget(title)
         text.addWidget(copy)
+        text.addWidget(self.training_summary_label)
+        text.addWidget(self.training_validation_label)
         intro_layout.addLayout(text, 1)
         self.train_button = QPushButton("Entrenar modelo")
         self.train_button.setObjectName("warningButton")
@@ -742,6 +770,34 @@ class GestureStudioQt(QMainWindow):
         copy = QLabel("Manten el gesto estable para activar la imagen asignada.")
         copy.setObjectName("muted")
         copy.setWordWrap(True)
+        settings_title = QLabel("Cuando abrir la imagen")
+        settings_title.setObjectName("sectionTitle")
+
+        self.confidence_slider = QSlider(Qt.Orientation.Horizontal)
+        self.confidence_slider.setRange(0, 100)
+        self.confidence_slider.setValue(round(self.config.confidence_threshold * 100))
+        self.confidence_slider.setToolTip("Seguridad minima para aceptar el gesto")
+        self.confidence_value = QLabel()
+        self.confidence_value.setMinimumWidth(46)
+        self.confidence_value.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+
+        self.votes_slider = QSlider(Qt.Orientation.Horizontal)
+        self.votes_slider.setRange(1, self.config.prediction_window)
+        self.votes_slider.setValue(self.config.stability_frames)
+        self.votes_slider.setToolTip("Cuantas lecturas seguidas deben coincidir")
+        self.votes_value = QLabel()
+        self.votes_value.setMinimumWidth(46)
+        self.votes_value.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+
+        self.save_recognition_button = QPushButton("Guardar ajustes")
+        apply_button_icon(self.save_recognition_button, "fa6s.floppy-disk")
+        self.save_recognition_button.clicked.connect(self.save_recognition_settings)
+        self.save_recognition_button.setEnabled(False)
+        self.recognition_settings_hint = QLabel(
+            "Mas seguridad evita aperturas por error; menos estabilidad responde mas rapido."
+        )
+        self.recognition_settings_hint.setObjectName("muted")
+        self.recognition_settings_hint.setWordWrap(True)
         self.recognition_model_status = QLabel()
         self.recognition_model_status.setWordWrap(True)
         self.launch_button = QPushButton("Iniciar reconocimiento")
@@ -751,10 +807,19 @@ class GestureStudioQt(QMainWindow):
         panel_layout.addWidget(eyebrow)
         panel_layout.addWidget(title)
         panel_layout.addWidget(copy)
-        panel_layout.addSpacing(18)
+        panel_layout.addSpacing(10)
+        panel_layout.addWidget(settings_title)
+        panel_layout.addWidget(self._setting_slider_row("Seguridad minima", self.confidence_slider, self.confidence_value))
+        panel_layout.addWidget(self._setting_slider_row("Estabilidad del gesto", self.votes_slider, self.votes_value))
+        panel_layout.addWidget(self.recognition_settings_hint)
+        panel_layout.addWidget(self.save_recognition_button, 0, Qt.AlignmentFlag.AlignLeft)
+        panel_layout.addSpacing(6)
         panel_layout.addWidget(self.recognition_model_status)
         panel_layout.addStretch()
         panel_layout.addWidget(self.launch_button)
+        self.confidence_slider.valueChanged.connect(self._update_recognition_settings_preview)
+        self.votes_slider.valueChanged.connect(self._update_recognition_settings_preview)
+        self._update_recognition_settings_preview()
         layout.addWidget(panel, 2)
 
         action_panel = QFrame()
@@ -768,6 +833,22 @@ class GestureStudioQt(QMainWindow):
         action_layout.addStretch()
         layout.addWidget(action_panel, 1)
         return page
+
+    @staticmethod
+    def _setting_slider_row(title: str, slider: QSlider, value_label: QLabel) -> QWidget:
+        row = QWidget()
+        row_layout = QVBoxLayout(row)
+        row_layout.setContentsMargins(0, 3, 0, 0)
+        row_layout.setSpacing(2)
+        heading = QHBoxLayout()
+        label = QLabel(title)
+        label.setBuddy(slider)
+        heading.addWidget(label)
+        heading.addStretch()
+        heading.addWidget(value_label)
+        row_layout.addLayout(heading)
+        row_layout.addWidget(slider)
+        return row
 
     def _build_evidence_page(self) -> QWidget:
         page = QWidget()
@@ -946,9 +1027,7 @@ class GestureStudioQt(QMainWindow):
             self.camera_index,
             self.config.capture_stability_frames,
             self.config.capture_stability_threshold,
-            self.heavy_assist_enabled,
             self.config.heavy_hand_interval_seconds,
-            self.config.heavy_hand_idle_interval_seconds,
             self.config.heavy_hand_stale_seconds,
             expected_hands_for(self.gesture_settings, self.selected_label),
         )
@@ -984,16 +1063,6 @@ class GestureStudioQt(QMainWindow):
         self.video_label.setText(f"Abriendo Cam {self.camera_index}...")
         self.restart_camera()
 
-    def _toggle_heavy_assist(self, enabled: bool) -> None:
-        self.heavy_assist_enabled = enabled
-        self.heavy_status_label.setText(
-            "RTMPose · reiniciando" if enabled else "RTMPose · desactivado"
-        )
-        self.heavy_status_label.setObjectName("warning" if enabled else "muted")
-        self.heavy_status_label.style().unpolish(self.heavy_status_label)
-        self.heavy_status_label.style().polish(self.heavy_status_label)
-        self.restart_camera()
-
     def _finish_camera_restart(self) -> None:
         self.start_camera()
         self.camera_restarting = False
@@ -1016,80 +1085,73 @@ class GestureStudioQt(QMainWindow):
             self.video_label.setText(message)
 
     def _on_heavy_status(self, status: HeavyAssistantStatus) -> None:
-        styles = {
-            "ready": "success",
-            "active": "warning",
-            "starting": "warning",
-            "unavailable": "error",
-            "error": "error",
-            "off": "muted",
-        }
-        provider = f" · {status.provider}" if status.provider else ""
-        self.heavy_status_label.setText(f"{status.message}{provider}")
-        self.heavy_status_label.setObjectName(styles.get(status.state, "muted"))
-        self.heavy_status_label.style().unpolish(self.heavy_status_label)
-        self.heavy_status_label.style().polish(self.heavy_status_label)
+        if status.state in {"ready", "active"}:
+            text, style = "Detector de manos", "success"
+            tooltip = "RTMPose activo. MediaPipe mantiene el seguimiento y queda como respaldo."
+        elif status.state == "starting":
+            text, style = "Cargando detector...", "warning"
+            tooltip = "Preparando RTMPose para detectar los puntos de la mano."
+        else:
+            text, style = "Respaldo activo", "warning"
+            tooltip = f"RTMPose no esta disponible; MediaPipe sigue detectando. {status.message}"
+        self.heavy_badge.setText(text)
+        self.heavy_badge.setToolTip(tooltip)
+        self.heavy_badge.setObjectName(style)
+        self.heavy_badge.style().unpolish(self.heavy_badge)
+        self.heavy_badge.style().polish(self.heavy_badge)
 
     def _on_frame(self, frame: np.ndarray, result: FeatureResult | None, stable: bool, movement: float) -> None:
-        self.current_frame = frame.copy()
+        self.current_frame = frame
         self.current_result = result
         self.current_stable = stable
         self.current_movement = movement
-        shown = frame.copy()
 
         target = self._current_guided_target()
         target_matches = self._target_matches(target, result)
         if target is not None:
+            shown = frame.copy()
             self._draw_target(shown, target, target_matches)
             self._update_guided_capture(stable, target_matches)
-        self.current_evidence_frame = shown.copy()
+        else:
+            shown = frame
+        self.current_evidence_frame = shown
 
         pixmap = bgr_to_pixmap(shown)
         self.video_label.setPixmap(pixmap.scaled(
             self.video_label.size(),
             Qt.AspectRatioMode.KeepAspectRatio,
-            Qt.TransformationMode.SmoothTransformation,
+            Qt.TransformationMode.FastTransformation,
         ))
         self._update_telemetry(result, stable, movement)
 
     def _update_telemetry(self, result: FeatureResult | None, stable: bool, movement: float) -> None:
         hands = len(result.hands) if result else 0
-        faces = len(result.faces) if result else 0
         expected_hands = expected_hands_for(self.gesture_settings, self.selected_label)
-        quality_score, quality_notes = self._capture_quality(result, stable, movement, expected_hands)
-        live_hands = result.tracking.live_hands if result else 0
+        quality_now = time.monotonic()
+        if quality_now - self._last_quality_update_at >= QUALITY_UPDATE_INTERVAL_SECONDS:
+            self._cached_capture_quality = self._capture_quality(
+                result,
+                stable,
+                movement,
+                expected_hands,
+                self.current_frame,
+            )
+            self._last_quality_update_at = quality_now
+        quality_score, quality_notes = self._cached_capture_quality
         cached_hands = result.tracking.cached_hands if result else 0
         assisted_hands = result.tracking.assisted_hands if result else 0
-        if assisted_hands:
-            self.hand_count_label.setText(f"Manos  {hands} · {assisted_hands} asistida RTM")
-        elif cached_hands:
-            self.hand_count_label.setText(f"Manos  {hands} · {live_hands} en vivo")
-        else:
-            self.hand_count_label.setText(f"Manos  {hands}")
-        self.face_label.setText(f"Cara  {'detectada' if faces else 'no detectada'}")
+        self.hand_count_label.setText(f"Manos  {hands}/{expected_hands}")
         occlusion_hold = bool(result and result.tracking.cached_hands)
-        tracking_names = {
-            "searching": "buscando manos",
-            "single": "una mano",
-            "locked": "identidades bloqueadas",
-            "crossing": "cruce protegido",
-            "occlusion_hold": "oclusion breve protegida",
-            "dropout_hold": "senal sostenida",
-            "reacquired": "identidades readquiridas",
-        }
-        tracking_mode = tracking_names.get(result.tracking.mode, result.tracking.mode) if result else "esperando"
-        processing = f" · {result.processing_ms:.0f} ms" if result else ""
-        self.tracking_label.setText(
-            f"Seguimiento {BALANCED_TRACKING_PROFILE.name} · {tracking_mode}{processing}"
-        )
-        if assisted_hands:
-            self.vector_status.setText("RTMPose asistiendo")
-        elif occlusion_hold:
-            self.vector_status.setText("Cruce protegido")
+        if occlusion_hold:
+            self.tracking_label.setText("Recuperando mano")
         elif result and result.tracking.crossing:
-            self.vector_status.setText("Identidad bloqueada")
+            self.tracking_label.setText("Cruce protegido")
+        elif stable:
+            self.tracking_label.setText("Gesto estable")
+        elif hands:
+            self.tracking_label.setText("Mano detectada · estabilizando")
         else:
-            self.vector_status.setText("Vector estable" if stable else "Buscando estabilidad")
+            self.tracking_label.setText("Buscando mano")
         stability_count = self.config.capture_stability_frames if stable else max(
             0, self.config.capture_stability_frames - 2
         ) if result and result.hands and np.isfinite(movement) else 0
@@ -1098,30 +1160,37 @@ class GestureStudioQt(QMainWindow):
         self.quality_bar.setValue(quality_score)
         self.quality_score_label.setText(f"{quality_score}%")
         self.quality_status_label.setText("\n".join(quality_notes))
+        quality_state = "good" if quality_score >= 75 else "medium" if quality_score >= 45 else "low"
+        if self.quality_bar.property("qualityState") != quality_state:
+            self.quality_bar.setProperty("qualityState", quality_state)
+            self.quality_score_label.setProperty("qualityState", quality_state)
+            for widget in (self.quality_bar, self.quality_score_label):
+                widget.style().unpolish(widget)
+                widget.style().polish(widget)
 
         if result and result.hand_poses:
             pose_lines = []
             for pose in result.hand_poses[:2]:
                 pose_lines.append(
-                    f"M{pose.index}  X {pose.center_x:.0%}  Y {pose.center_y:.0%} · {pose.zone}\n"
-                    f"A {pose.angle_deg:+.0f} deg · T {pose.tilt_deg:+.0f} deg"
+                    f"Mano {pose.index} · X {pose.center_x:.0%} · Y {pose.center_y:.0%} · Giro {pose.angle_deg:+.0f}°"
                 )
             self.pose_label.setText("\n".join(pose_lines))
-            self.guidance_label.setText(
-                "RTMPose recupero una mano: manten la postura mientras MediaPipe la readquiere."
-                if assisted_hands
-                else "Cruce protegido: conserva la postura hasta recuperar ambas manos."
-                if occlusion_hold
-                else "Cruce detectado: las identidades M1/M2 siguen bloqueadas."
-                if result.tracking.crossing
-                else "Listo para capturar."
-                if stable
-                else "Manten el gesto quieto hasta completar la barra."
-            )
+            if occlusion_hold:
+                guidance = "Cruce protegido: conserva la postura hasta recuperar ambas manos."
+            elif result.tracking.crossing:
+                guidance = "Cruce detectado: las identidades M1/M2 siguen bloqueadas."
+            elif stable and quality_score >= 75:
+                guidance = "Buena toma. Cambia un poco el angulo o la distancia en las siguientes muestras."
+            elif stable:
+                guidance = "Gesto estable; revisa los avisos de calidad antes de capturar."
+            elif assisted_hands:
+                guidance = "RTMPose esta marcando las manos; manten el gesto quieto para estabilizar la muestra."
+            else:
+                guidance = "Manten el gesto quieto hasta completar la barra."
+            self.guidance_label.setText(guidance)
         else:
-            self.pose_label.setText("Posicion  --\nAngulo  --\nInclinacion  --")
+            self.pose_label.setText("Posición -- · Giro --")
             self.guidance_label.setText("Muestra una mano completa dentro del cuadro.")
-        self.vector_summary_label.setText("\n".join(summarize_vector(result)))
 
     def _capture_quality(
         self,
@@ -1129,45 +1198,105 @@ class GestureStudioQt(QMainWindow):
         stable: bool,
         movement: float,
         expected_hands: int,
+        frame: np.ndarray | None = None,
     ) -> tuple[int, list[str]]:
         score = 0
         notes: list[str] = []
         hands = len(result.hands) if result else 0
         if hands >= expected_hands:
-            score += 35
+            score += 25
             notes.append(f"Manos OK: {hands}/{expected_hands}")
         else:
             notes.append(f"Faltan manos: {hands}/{expected_hands}")
 
         if stable:
-            score += 30
+            score += 25
             notes.append("Estabilidad OK")
         elif np.isfinite(movement):
             notes.append(f"Movimiento alto: {movement:.2f}")
         else:
             notes.append("Buscando estabilidad")
 
-        pose = result.hand_poses[0] if result and result.hand_poses else None
-        if pose and 0.08 <= pose.width <= 0.75 and 0.08 <= pose.height <= 0.85:
-            score += 20
+        poses = result.hand_poses if result else []
+        if poses and all(0.08 <= pose.width <= 0.75 and 0.08 <= pose.height <= 0.85 for pose in poses):
+            score += 15
             notes.append("Tamano en cuadro OK")
-        elif pose:
-            notes.append("Ajusta distancia a camara")
+        elif poses:
+            notes.append("Ajusta la distancia a la camara")
         else:
             notes.append("Sin pose de mano")
 
-        if result and result.faces:
-            score += 10
-            notes.append("Cara detectada")
-        if result and result.tracking.assisted_hands:
-            score = max(0, score - 5)
-            notes.insert(0, "Mano recuperada por RTMPose")
-        elif result and result.tracking.cached_hands:
-            score = max(0, score - 10)
+        if poses:
+            fully_visible = all(
+                x1 > 0.01 and y1 > 0.01 and x2 < 0.99 and y2 < 0.99
+                for pose in poses
+                for x1, y1, x2, y2 in [pose.bbox]
+            )
+            if fully_visible:
+                score += 10
+                notes.append("Manos completas dentro del cuadro")
+            else:
+                notes.append("Aleja las manos de los bordes")
+
+        if frame is not None and frame.size:
+            height, width = frame.shape[:2]
+            scale = min(320 / max(width, 1), 240 / max(height, 1), 1.0)
+            small = cv2.resize(
+                frame,
+                (max(1, round(width * scale)), max(1, round(height * scale))),
+                interpolation=cv2.INTER_AREA,
+            )
+            gray = cv2.cvtColor(small, cv2.COLOR_BGR2GRAY) if small.ndim == 3 else small
+            brightness = float(gray.mean())
+            if 55 <= brightness <= 205:
+                score += 10
+                notes.append("Luz OK")
+            elif brightness < 55:
+                notes.append("Aumenta la luz")
+            else:
+                notes.append("Reduce la luz directa")
+
+            sharpness = float(cv2.Laplacian(gray, cv2.CV_64F).var())
+            if sharpness >= 45:
+                score += 10
+                notes.append("Enfoque OK")
+            elif sharpness >= 24:
+                score += 5
+                notes.append("Enfoque mejorable")
+            else:
+                notes.append("Imagen borrosa: limpia o enfoca la camara")
+
+            clipped = float(np.mean((gray <= 8) | (gray >= 247)))
+            if clipped <= 0.12:
+                score += 5
+            else:
+                notes.append("Evita sombras o zonas quemadas")
+        else:
+            notes.append("Esperando imagen de la camara")
+
+        if result and result.tracking.cached_hands:
+            score = max(0, score - 8)
             notes.insert(0, "Oclusion protegida")
         elif result and result.tracking.crossing:
             notes.insert(0, "Cruce protegido")
-        return min(score, 100), notes[:4]
+        warning_starts = (
+            "Faltan",
+            "Movimiento alto",
+            "Buscando",
+            "Ajusta",
+            "Sin pose",
+            "Aleja",
+            "Aumenta",
+            "Reduce",
+            "Enfoque mejorable",
+            "Imagen borrosa",
+            "Evita",
+            "Oclusion",
+            "Mano recuperada",
+        )
+        warnings = [note for note in notes if note.startswith(warning_starts)]
+        feedback = warnings + [note for note in notes if note not in warnings]
+        return min(score, 100), feedback[:4]
 
     def _current_guided_target(self) -> CaptureTarget | None:
         if 0 <= self.guided_index < len(self.guided_targets):
@@ -1441,7 +1570,7 @@ class GestureStudioQt(QMainWindow):
             count = self.sample_counts.get(label, 0)
             item = QListWidgetItem(QIcon(str(self.gesture_map[label])), f"{label}\n{count} muestras")
             item.setData(Qt.ItemDataRole.UserRole, label)
-            item.setSizeHint(QSize(210, 62))
+            item.setSizeHint(QSize(0, 62))
             self.gesture_list.addItem(item)
             if label == self.selected_label:
                 selected_row = index
@@ -1485,6 +1614,84 @@ class GestureStudioQt(QMainWindow):
             275, 165, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation
         ))
         self.fade_controller.pulse(self.target_preview)
+
+    def _update_recognition_settings_preview(self, *_args) -> None:
+        self.confidence_value.setText(f"{self.confidence_slider.value()}%")
+        self.votes_value.setText(
+            f"{self.votes_slider.value()} / {self.config.prediction_window}"
+        )
+        changed = (
+            self.confidence_slider.value() != round(self.config.confidence_threshold * 100)
+            or self.votes_slider.value() != self.config.stability_frames
+        )
+        self.save_recognition_button.setEnabled(changed)
+
+    def save_recognition_settings(self) -> None:
+        updated = replace(
+            self.config,
+            confidence_threshold=self.confidence_slider.value() / 100,
+            stability_frames=self.votes_slider.value(),
+        )
+        try:
+            save_config(updated)
+        except (OSError, RuntimeError) as exc:
+            self._notify(f"No pude guardar los ajustes: {exc}", "error")
+            return
+
+        self.config = updated
+        self.save_recognition_button.setEnabled(False)
+        self._notify("Ajustes de reconocimiento guardados", "ok")
+
+    def _refresh_training_summary(self) -> None:
+        counts = {label: self.sample_counts.get(label, 0) for label in self.labels}
+        if not counts:
+            self.training_summary_label.setText("Agrega un gesto para empezar.")
+            self.training_summary_label.setObjectName("muted")
+            self.training_summary_label.style().unpolish(self.training_summary_label)
+            self.training_summary_label.style().polish(self.training_summary_label)
+        else:
+            lowest_label = min(counts, key=counts.get)
+            lowest_count = counts[lowest_label]
+            total = sum(counts.values())
+            highest_count = max(counts.values())
+            if lowest_count < 3:
+                message = f"Faltan muestras: {lowest_label} tiene {lowest_count}; el minimo es 3 por gesto."
+                self.training_summary_label.setObjectName("warning")
+            elif highest_count / lowest_count >= 1.5:
+                message = (
+                    f"Clases desbalanceadas: prioriza {lowest_label} ({lowest_count} muestras; "
+                    f"la clase mayor tiene {highest_count})."
+                )
+                self.training_summary_label.setObjectName("warning")
+            else:
+                message = f"{total} muestras en {len(counts)} gestos; las clases estan razonablemente equilibradas."
+                self.training_summary_label.setObjectName("success")
+            self.training_summary_label.setText(message)
+            self.training_summary_label.style().unpolish(self.training_summary_label)
+            self.training_summary_label.style().polish(self.training_summary_label)
+
+        if not MODEL_FILE.exists():
+            self.training_validation_label.setText("Entrena el modelo para ver la validacion cruzada.")
+            return
+        try:
+            payload = joblib.load(MODEL_FILE)
+        except Exception:
+            self.training_validation_label.setText("No pude leer la validacion del modelo actual.")
+            return
+        accuracy = payload.get("validation_accuracy")
+        balanced = payload.get("validation_balanced_accuracy")
+        if accuracy is None:
+            self.training_validation_label.setText(
+                "El modelo necesita al menos 4 muestras por gesto para estimar su validacion."
+            )
+        elif balanced is None:
+            self.training_validation_label.setText(
+                f"Exactitud estimada {accuracy:.0%}; vuelve a entrenar para medir el equilibrio entre gestos."
+            )
+        else:
+            self.training_validation_label.setText(
+                f"Validacion cruzada: exactitud {accuracy:.0%} · balance entre gestos {balanced:.0%}."
+            )
 
     def change_expected_hands(self) -> None:
         if not self.selected_label:
@@ -1620,6 +1827,7 @@ class GestureStudioQt(QMainWindow):
 
     def refresh_training(self) -> None:
         clear_layout(self.training_layout)
+        self._refresh_training_summary()
         minimum_ready = True
         for label in self.labels:
             count = self.sample_counts.get(label, 0)

@@ -156,6 +156,45 @@ class HandIdentityTrackerTests(unittest.TestCase):
 
 
 class HandDetectionMergeTests(unittest.TestCase):
+    def test_per_frame_mediapipe_tracking_is_not_replaced_by_stale_rtmpose(self) -> None:
+        mediapipe_hand = HandDetection(make_tracking_hand(0.30), "Left", 0.9)
+        rtmpose_hand = HandDetection(
+            make_tracking_hand(0.72),
+            source="rtmpose",
+            confidence=0.95,
+        )
+        extractor = LandmarkFeatureExtractor.__new__(LandmarkFeatureExtractor)
+        extractor.hand_tracker = HandIdentityTracker()
+        extractor.backend = SimpleNamespace(detect=lambda _frame: ([mediapipe_hand], []))
+        frame = np.zeros((100, 100, 3), dtype=np.uint8)
+
+        tracked = extractor.extract(frame, supplemental_hands=[rtmpose_hand], expected_hands=1)
+
+        self.assertIsNotNone(tracked)
+        self.assertEqual(tracked.tracking.sources, ("mediapipe",))
+        self.assertAlmostEqual(tracked.hands[0][0].x, mediapipe_hand.landmarks[0].x)
+
+    def test_new_rtmpose_detection_is_used_as_a_tracking_anchor(self) -> None:
+        mediapipe_hand = HandDetection(make_tracking_hand(0.30), "Left", 0.9)
+        rtmpose_hand = HandDetection(
+            make_tracking_hand(0.72),
+            source="rtmpose",
+            confidence=0.95,
+        )
+        extractor = LandmarkFeatureExtractor.__new__(LandmarkFeatureExtractor)
+        extractor.hand_tracker = HandIdentityTracker()
+        extractor.backend = SimpleNamespace(detect=lambda _frame: ([mediapipe_hand], []))
+
+        anchored = extractor.extract(
+            np.zeros((100, 100, 3), dtype=np.uint8),
+            primary_hands=[rtmpose_hand],
+            expected_hands=1,
+        )
+
+        self.assertIsNotNone(anchored)
+        self.assertEqual(anchored.tracking.sources, ("rtmpose",))
+        self.assertAlmostEqual(anchored.hands[0][0].x, rtmpose_hand.landmarks[0].x)
+
     def test_adds_only_the_heavy_hand_missing_from_mediapipe(self) -> None:
         primary = [HandDetection(make_tracking_hand(0.30), "Left", 0.9)]
         supplemental = [
