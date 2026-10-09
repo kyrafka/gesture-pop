@@ -15,7 +15,7 @@ data/evidencias_vectores/
 data/references/
 gesture_settings.json
 
-# Imagenes locales del usuario; las imagenes ya versionadas no se alteran.
+# Keep user-provided images local unless they are intentionally added as project assets.
 imagenes/*
 !imagenes/.gitkeep
 

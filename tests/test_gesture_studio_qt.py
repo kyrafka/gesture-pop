@@ -56,6 +56,16 @@ class GestureStudioQtTests(unittest.TestCase):
         finally:
             window.close()
 
+    def test_builds_cleanly_before_the_user_adds_images(self) -> None:
+        with patch("gesture_studio_qt.load_gesture_map", return_value={}):
+            window = GestureStudioQt(start_camera=False)
+        try:
+            self.assertEqual(window.labels, [])
+            self.assertIsNone(window.selected_label)
+            self.assertEqual(window.pages.count(), 5)
+        finally:
+            window.close()
+
     def test_label_validation_matches_image_mapping_rules(self) -> None:
         self.assertTrue(valid_label("mano_arriba-2"))
         self.assertFalse(valid_label("mano arriba"))

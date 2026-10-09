@@ -35,9 +35,9 @@ models/hand_landmarker.task   requerido
 models/face_landmarker.task   opcional
 ```
 
-Para instalar RTMDet y RTMPose, ejecuta `NO_TOCAR/INSTALAR_RTMPOSE.bat`. El instalador prepara las dependencias y guarda los modelos en `models/heavy/`. Esta descarga puede tardar la primera vez.
+Para instalar RTMDet y RTMPose, ejecuta `scripts/install_rtmpose.bat`. El instalador prepara las dependencias y guarda los modelos en `models/heavy/`. Esta descarga puede tardar la primera vez.
 
-Cuando termine, abre el programa con doble clic en `NO_TOCAR/ABRIR_GESTURE_POP.bat`. Tambien puedes abrir `gesture_studio_qt.py` desde VS Code usando el interprete `.venv`.
+Cuando termine, abre el programa con doble clic en `scripts/run_studio.bat`. Tambien puedes abrir `gesture_studio_qt.py` desde VS Code usando el interprete `.venv`.
 
 ## Guia rapida
 
@@ -67,13 +67,13 @@ models/                   pesos locales y modelo entrenado
 gesture_settings.json     ajustes por gesto
 ```
 
-Estas carpetas y archivos estan ignorados por Git. No agregues manualmente tus capturas, referencias ni pesos al repositorio. Las imagenes que ya forman parte de `imagenes/` son recursos del proyecto; las imagenes nuevas en esa carpeta quedan ignoradas por defecto.
+Las capturas, referencias, vectores y pesos se quedan en tu equipo. El repositorio no incluye imagenes de ejemplo: lo que pongas en `imagenes/` tambien queda local, salvo que decidas agregar un recurso publico a proposito.
 
 ## Si algo no funciona
 
 - **No aparece video:** cierra Teams o el navegador que use la webcam, reinicia la aplicacion y prueba otra camara desde el selector.
 - **No hay puntos de mano:** confirma que `models/hand_landmarker.task` exista y mejora la luz; procura que la mano no quede cortada.
-- **RTMPose no esta listo:** vuelve a ejecutar `NO_TOCAR/INSTALAR_RTMPOSE.bat` y revisa que haya modelos `.onnx` dentro de `models/heavy/`. MediaPipe puede mantener el seguimiento mientras solucionas la instalacion.
+- **RTMPose no esta listo:** vuelve a ejecutar `scripts/install_rtmpose.bat` y revisa que haya modelos `.onnx` dentro de `models/heavy/`. Para revisar una captura local, ejecuta `python scripts/diagnose_rtmpose.py`. MediaPipe puede mantener el seguimiento mientras solucionas la instalacion.
 - **Se equivoca de gesto:** captura mas ejemplos variados y equilibrados. En Reconocimiento, sube la seguridad minima para evitar disparos dudosos; bajarla lo hace responder con menos exigencia.
 - **Se siente lento:** cierra otras aplicaciones que usen la camara o consuman CPU. RTMPose es el detector de mayor costo y, por ahora, se ejecuta con ONNX Runtime en CPU.
 
@@ -85,6 +85,8 @@ La interfaz Qt es la opcion recomendada. Para trabajar desde terminal tambien pu
 python train_gestures.py
 python gesture_launcher.py
 ```
+
+Tambien puedes abrir el reconocimiento con doble clic en `scripts/run_recognition.bat`.
 
 El entrenador usa `1` a `9` para elegir gesto, `c` para capturar, `u` para deshacer, `s` para entrenar, `v` para alternar los puntos y `q` para salir.
 

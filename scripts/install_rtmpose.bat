@@ -10,7 +10,7 @@ if not exist "%ROOT%\.venv\Scripts\python.exe" (
 
 "%ROOT%\.venv\Scripts\python.exe" -m pip install -r "%ROOT%\requirements-heavy.txt"
 if errorlevel 1 goto error
-"%ROOT%\.venv\Scripts\python.exe" "%ROOT%\setup_heavy_assist.py"
+"%ROOT%\.venv\Scripts\python.exe" "%ROOT%\scripts\setup_rtmpose.py"
 if errorlevel 1 goto error
 
 echo.

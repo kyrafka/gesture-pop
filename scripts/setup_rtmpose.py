@@ -1,9 +1,13 @@
 from __future__ import annotations
 
 import shutil
+import sys
 import urllib.request
 import zipfile
 from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
 
 from heavy_hand_backend import HEAVY_MODEL_DIR, find_heavy_model_paths
 
